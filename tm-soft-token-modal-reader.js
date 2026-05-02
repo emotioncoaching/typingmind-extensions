@@ -336,6 +336,7 @@
         .slice(0, 12)
         .map((text) => parseTokenishNumbers(text)[0])
         .filter((value) => Number.isFinite(value));
+      const bodyNumbersInRange = parseTokenishNumbers(bodyText).slice(0, 20);
   
       const candidates = [];
   
@@ -396,7 +397,9 @@
         agentDebugLog("H1,H2,H4", "tm-soft-token-modal-reader.js:findTypingMindVisibleTokenCount", "token scan found no candidates", {
           scannedLineCount: lines.length,
           hasBodyContextLengthText,
-          bodyTokenNumbers
+          bodyTokenNumbers,
+          bodyNumbersInRange,
+          sourceSurface: scanDebugTokenSourceSurface()
         });
         return null;
       }
@@ -406,6 +409,7 @@
         scannedLineCount: lines.length,
         hasBodyContextLengthText,
         bodyTokenNumbers,
+        bodyNumbersInRange,
         topCandidates: candidates.slice(0, 8)
       });
   
@@ -458,6 +462,63 @@
       }
   
       return lines;
+    }
+  
+    function scanDebugTokenSourceSurface() {
+      const attrMatches = [];
+      const valueMatches = [];
+      let elementCount = 0;
+      let contextAttrCount = 0;
+      let numericAttrCount = 0;
+  
+      for (const el of document.body.querySelectorAll("*")) {
+        elementCount += 1;
+        if (elementCount > 3000) break;
+  
+        for (const attr of el.attributes || []) {
+          const lower = attr.value.toLowerCase();
+          const numbers = parseTokenishNumbers(attr.value).slice(0, 5);
+          const hasContextOrToken =
+            lower.includes("context") ||
+            lower.includes("token") ||
+            attr.name.toLowerCase().includes("context") ||
+            attr.name.toLowerCase().includes("token");
+  
+          if (hasContextOrToken) contextAttrCount += 1;
+          if (numbers.length) numericAttrCount += 1;
+  
+          if ((hasContextOrToken || numbers.length) && attrMatches.length < 20) {
+            attrMatches.push({
+              tagName: el.tagName,
+              attrName: attr.name,
+              hasContextOrToken,
+              numbers
+            });
+          }
+        }
+  
+        if (
+          (el.tagName === "INPUT" || el.tagName === "TEXTAREA") &&
+          typeof el.value === "string"
+        ) {
+          const numbers = parseTokenishNumbers(el.value).slice(0, 5);
+          if (numbers.length && valueMatches.length < 10) {
+            valueMatches.push({
+              tagName: el.tagName,
+              id: el.id || "",
+              numbers
+            });
+          }
+        }
+      }
+  
+      return {
+        elementCount,
+        contextAttrCount,
+        numericAttrCount,
+        attrMatches,
+        valueMatches
+      };
     }
   
     function parseTokenishNumbers(text) {
