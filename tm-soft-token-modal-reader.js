@@ -325,6 +325,15 @@
     }
   
     function findTypingMindVisibleTokenCount() {
+      const currentContextValue = findCurrentContextLengthFromText(document.body.textContent || "");
+      if (currentContextValue) {
+        agentDebugLog("H1", "tm-soft-token-modal-reader.js:findTypingMindVisibleTokenCount", "current context parser selected value", {
+          tokens: currentContextValue.tokens,
+          source: currentContextValue.source
+        });
+        return currentContextValue;
+      }
+  
       const lines = collectTextLines(
         document.body,
         CFG.MAX_TOKEN_SCAN_TEXT_NODES,
@@ -417,6 +426,22 @@
         ...candidates[0],
         scannedLineCount: lines.length,
         hasBodyContextLengthText
+      };
+    }
+  
+    function findCurrentContextLengthFromText(text) {
+      const match = text.match(/current\s+context\s+length[\s\S]{0,80}?(\d[\d,.]*)\s*tokens?/i);
+      if (!match) return null;
+  
+      const tokens = parseTokenishNumbers(match[1])[0];
+      if (!tokens || tokens < 1000 || tokens > 2000000) return null;
+  
+      return {
+        tokens,
+        score: 100,
+        source: "Current context length",
+        scannedLineCount: null,
+        hasBodyContextLengthText: true
       };
     }
   
