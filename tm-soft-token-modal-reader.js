@@ -691,7 +691,11 @@
               keyPath: store.keyPath,
               indexNames: Array.from(store.indexNames).slice(0, 20),
               scannedRecords: 0,
-              chatRecords: []
+              chatRecordCount: 0,
+              lastOpenedMatchCount: 0,
+              likelyOpenChatCandidates: [],
+              highTokenCandidates: [],
+              recentCandidates: []
             };
             stores.push(storeSummary);
   
@@ -699,19 +703,30 @@
             const cursorRequest = store.openCursor();
             cursorRequest.onsuccess = () => {
               const cursor = cursorRequest.result;
-              if (!cursor || seen >= 250) return;
+              if (!cursor) return;
               seen += 1;
               storeSummary.scannedRecords = seen;
   
               const chatSummary = summarizeChatRecord(cursor.key, cursor.value, activeChatHints);
               if (chatSummary) {
-                const shouldKeep =
-                  chatSummary.matchesLastOpened ||
-                  chatSummary.updatedAtRankable ||
-                  chatSummary.hasNearRangeTokenUsage ||
-                  storeSummary.chatRecords.length < 25;
-                if (shouldKeep && storeSummary.chatRecords.length < 60) {
-                  storeSummary.chatRecords.push(chatSummary);
+                storeSummary.chatRecordCount += 1;
+                if (
+                  chatSummary.keyMatchesLastOpened ||
+                  chatSummary.idMatchesLastOpened ||
+                  chatSummary.chatIDMatchesLastOpened
+                ) {
+                  storeSummary.lastOpenedMatchCount += 1;
+                }
+  
+                if (isLikelyOpenChatCandidate(chatSummary)) {
+                  pushLimited(storeSummary.likelyOpenChatCandidates, chatSummary, 20);
+                }
+                if (chatSummary.hasNearRangeTokenUsage || chatSummary.tokenUsage.totalTokens >= 1000000) {
+                  pushLimited(storeSummary.highTokenCandidates, chatSummary, 30);
+                }
+                if (chatSummary.updatedAtMs) {
+                  pushLimited(storeSummary.recentCandidates, chatSummary, 20);
+                  storeSummary.recentCandidates.sort((a, b) => (b.updatedAtMs || 0) - (a.updatedAtMs || 0));
                 }
               }
               cursor.continue();
@@ -719,6 +734,21 @@
           }
         };
       });
+    }
+  
+    function pushLimited(list, item, limit) {
+      list.push(item);
+      if (list.length > limit) list.shift();
+    }
+  
+    function isLikelyOpenChatCandidate(chatSummary) {
+      const totalTokens = chatSummary.tokenUsage.totalTokens || 0;
+      return (
+        chatSummary.messageCount >= 35 &&
+        chatSummary.messageCount <= 42 &&
+        totalTokens >= 1000000 &&
+        totalTokens <= 2500000
+      );
     }
   
     function summarizeChatRecord(key, value, activeChatHints) {
@@ -755,6 +785,7 @@
           totalCachedTokens: numberOrNull(tokenUsage.totalCachedTokens),
           totalReasoningTokens: numberOrNull(tokenUsage.totalReasoningTokens)
         },
+        usageDerived: deriveUsageCandidates(messages),
         hasNearRangeTokenUsage: [
           tokenUsage.totalTokens,
           tokenUsage.messageTokens,
@@ -762,6 +793,37 @@
           tokenUsage.totalReasoningTokens
         ].some((value) => typeof value === "number" && value >= 80000 && value <= 2000000),
         usageValues
+      };
+    }
+  
+    function deriveUsageCandidates(messages) {
+      const usageMessages = messages
+        .filter((message) => message && typeof message === "object" && message.usage);
+      const usageValues = usageMessages.map((message) => message.usage || {});
+      const totals = usageValues
+        .map((usage) => numberOrNull(usage.total_tokens))
+        .filter((value) => value !== null);
+      const promptTotals = usageValues
+        .map((usage) => numberOrNull(usage.prompt_tokens))
+        .filter((value) => value !== null);
+      const currentLikeTotals = usageValues
+        .map((usage) => {
+          const prompt = numberOrZero(usage.prompt_tokens);
+          const cacheRead = numberOrZero(usage.cache_read_input_tokens);
+          const cacheCreate = numberOrZero(usage.cache_creation_input_tokens);
+          const extendedCacheCreate = numberOrZero(usage.extended_cache_creation_input_tokens);
+          return prompt + cacheRead + cacheCreate + extendedCacheCreate;
+        })
+        .filter((value) => value > 0);
+  
+      return {
+        usageMessageCount: usageMessages.length,
+        maxTotalTokens: totals.length ? Math.max(...totals) : null,
+        lastTotalTokens: totals.length ? totals[totals.length - 1] : null,
+        maxPromptTokens: promptTotals.length ? Math.max(...promptTotals) : null,
+        lastPromptTokens: promptTotals.length ? promptTotals[promptTotals.length - 1] : null,
+        maxCurrentLikeTokens: currentLikeTotals.length ? Math.max(...currentLikeTotals) : null,
+        lastCurrentLikeTokens: currentLikeTotals.length ? currentLikeTotals[currentLikeTotals.length - 1] : null
       };
     }
   
@@ -785,6 +847,10 @@
   
     function numberOrNull(value) {
       return typeof value === "number" && Number.isFinite(value) ? value : null;
+    }
+  
+    function numberOrZero(value) {
+      return typeof value === "number" && Number.isFinite(value) ? value : 0;
     }
   
     function normalizeTimestamp(value) {
