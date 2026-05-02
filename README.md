@@ -16,19 +16,19 @@ Base URL:
 https://emotioncoaching.github.io/typingmind-extensions/tm-soft-token-modal-reader.js
 ```
 
-Recommended cache-busted URL for the latest known version:
+Recommended cache busting pattern:
 
 ```text
-https://emotioncoaching.github.io/typingmind-extensions/tm-soft-token-modal-reader.js?v=input-anchor-2
+https://emotioncoaching.github.io/typingmind-extensions/tm-soft-token-modal-reader.js?v=YOUR_MARKER
 ```
 
 The query string is only for cache busting. GitHub Pages serves the same file path either way.
 
-Latest known pushed commit at the time this README was written:
+This repo changes over time; use the deployed script URL plus the latest commit on `main` as the authoritative source-of-truth for what is live.
 
-```text
-cd85c5b Nudge desktop widget anchor lower
-```
+## Privacy posture for this README
+
+This document intentionally avoids machine-specific filesystem paths, local-only URLs, transcripts, instrumentation endpoints, screenshots, identities, workspace names, and personal chat excerpts. It stays at the level of publicly hosted script URLs and generalized implementation notes.
 
 ## What The Widget Does
 
@@ -448,9 +448,8 @@ Problem:
 
 Evidence:
 
-- Runtime diagnostics showed the modal text was absent from the DOM.
-- LocalStorage and window globals were not sufficient.
-- IndexedDB contained chat records with message usage metadata.
+- The modal-specific text disappeared from `document.body` when the modal was closed.
+- The same values were observable in IndexedDB-backed chat metadata.
 
 Fix:
 
@@ -463,23 +462,19 @@ Problem:
 
 - The widget updated after switching chats, but sometimes took 4 to 6 seconds.
 
-Evidence:
+Observed symptom:
 
-- Logs showed IndexedDB reads were fast, often under a few hundred ms.
-- The delay was mainly waiting for the 6-second periodic IndexedDB refresh.
+- The UI could stall on the periodic refresh cadence unless extra refresh coordination was added.
 
-Initial fix:
+Design evolution:
 
-- Refresh immediately when the active chat hint changed.
+Immediate refresh experiments caused confusing transient UI states:
 
-Regression:
+  - Fallback estimate flashing small numbers.
+  - Brief "unknown" flashes.
+  - Multiple quick repaint cycles during chat load.
 
-- Immediate refresh caused confusing UI artifacts:
-  - fallback numbers
-  - not-found flashes
-  - multiple quick updates
-
-Final fix:
+Stabilization approach adopted:
 
 - Wait for the active chat hint to stay stable for about 1500 ms.
 - Suppress repainting during the switch.
@@ -528,28 +523,22 @@ When changing the extension:
 
 ## Useful Commands
 
-Syntax check:
+These assume you are standing in your local checkout of this repository root.
 
-```powershell
-node --check "C:\Users\mb\typingmind-extensions\tm-soft-token-modal-reader.js"
+Syntax check (`node` is optional sanity checking only):
+
+```sh
+node --check ./tm-soft-token-modal-reader.js
 ```
 
-Check working tree:
+Basic git workflow:
 
-```powershell
-git -C "C:\Users\mb\typingmind-extensions" status --short
-```
-
-Commit example:
-
-```powershell
-git -C "C:\Users\mb\typingmind-extensions" add "tm-soft-token-modal-reader.js" "README.md"
-$msg = @'
-Describe the change here
-
-'@
-git -C "C:\Users\mb\typingmind-extensions" commit -m $msg
-git -C "C:\Users\mb\typingmind-extensions" push
+```sh
+git status
+git diff
+git add tm-soft-token-modal-reader.js README.md
+git commit -m "Describe your change"
+git push
 ```
 
 ## File Map
@@ -572,10 +561,4 @@ The latest version is a read-only TypingMind soft token widget.
 
 It starts minimized on desktop and appears as a tiny dot on mobile. It uses TypingMind's visible token count when possible, IndexedDB active chat usage when the modal is closed, and a bounded fallback estimate only when needed. It waits about 1500 ms after chat switches before refreshing, to avoid flicker and transient wrong counts. It uses purple when no token source is found.
 
-The most recent user-facing URL is:
-
-```text
-https://emotioncoaching.github.io/typingmind-extensions/tm-soft-token-modal-reader.js?v=input-anchor-2
-```
-
-As of this README, there are no known uncommitted changes.
+The canonical user-facing installation URL shape is shown at the top of this document. Update the optional `v=` suffix whenever you redeploy so browsers do not silently cache an older build.
