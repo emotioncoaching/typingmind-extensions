@@ -604,13 +604,9 @@
   
     async function runSourceDiscovery() {
       const bodyText = document.body.textContent || "";
-      agentDebugLog("H1,H5", "tm-soft-token-modal-reader.js:runSourceDiscovery", "closed-modal DOM/token surface", {
+      agentDebugLog("H1", "tm-soft-token-modal-reader.js:runSourceDiscovery", "closed-modal DOM/token surface", {
         hasCurrentContextText: /current\s+context\s+length/i.test(bodyText),
         tokenNumbers: extractTokenNumberMentions(bodyText).slice(0, 12),
-        numericTextNearLimit: parseTokenishNumbers(bodyText)
-          .filter((value) => value >= 80000 && value <= 2000000)
-          .slice(0, 12),
-        numericTextSources: inspectDomNumericTextSurface(),
         urlPathLength: location.pathname.length,
         hashLength: location.hash.length
       });
@@ -625,68 +621,44 @@
         .filter((value) => Number.isFinite(value));
     }
   
-    function inspectDomNumericTextSurface() {
-      const matches = [];
-      const walker = document.createTreeWalker(
-        document.body,
-        NodeFilter.SHOW_TEXT,
-        {
-          acceptNode(node) {
-            const parent = node.parentElement;
-            if (!parent || parent.closest("#tm-soft-token-warning, script, style, svg")) {
-              return NodeFilter.FILTER_REJECT;
-            }
-            const numbers = parseTokenishNumbers(node.nodeValue)
-              .filter((value) => value >= 80000 && value <= 2000000);
-            return numbers.length
-              ? NodeFilter.FILTER_ACCEPT
-              : NodeFilter.FILTER_REJECT;
-          }
-        }
-      );
-  
-      let node;
-      while ((node = walker.nextNode()) && matches.length < 20) {
-        const parent = node.parentElement;
-        const numbers = parseTokenishNumbers(node.nodeValue)
-          .filter((value) => value >= 80000 && value <= 2000000);
-        const lowerText = node.nodeValue.toLowerCase();
-        matches.push({
-          numbers,
-          tagName: parent.tagName,
-          dataElementId: parent.getAttribute("data-element-id") || "",
-          role: parent.getAttribute("role") || "",
-          hasTokenWord: lowerText.includes("token"),
-          hasContextWord: lowerText.includes("context"),
-          hasCostWord: lowerText.includes("cost") || lowerText.includes("price") || lowerText.includes("$"),
-          textLength: node.nodeValue.length,
-          parentTextLength: parent.textContent ? parent.textContent.length : 0,
-          nearestDialog: Boolean(parent.closest('[role="dialog"], [aria-modal="true"]'))
-        });
-      }
-  
-      return matches;
-    }
-  
     async function inspectIndexedDbSurface() {
       if (!indexedDB.databases) {
         return { supported: false };
       }
   
       const databases = await indexedDB.databases();
+      const activeChatHints = getActiveChatHints();
       const summaries = [];
       for (const dbInfo of databases.slice(0, 8)) {
         if (!dbInfo.name) continue;
-        const summary = await inspectDatabase(dbInfo.name).catch((error) => ({
+        const summary = await inspectDatabase(dbInfo.name, activeChatHints).catch((error) => ({
           name: dbInfo.name,
           errorName: error && error.name ? error.name : "unknown"
         }));
         summaries.push(summary);
       }
-      return { supported: true, databases: summaries };
+      return { supported: true, activeChatHints, databases: summaries };
     }
   
-    function inspectDatabase(name) {
+    function getActiveChatHints() {
+      const lastOpened = parseStoredString(localStorage.getItem("TM_useLastOpenedChatID"));
+      return {
+        lastOpenedLength: lastOpened ? lastOpened.length : 0,
+        hashLength: location.hash.length
+      };
+    }
+  
+    function parseStoredString(value) {
+      if (!value) return "";
+      try {
+        const parsed = JSON.parse(value);
+        return typeof parsed === "string" ? parsed : value;
+      } catch (_) {
+        return value;
+      }
+    }
+  
+    function inspectDatabase(name, activeChatHints) {
       return new Promise((resolve, reject) => {
         const request = indexedDB.open(name);
         request.onerror = () => reject(request.error);
@@ -718,8 +690,8 @@
               name: storeName,
               keyPath: store.keyPath,
               indexNames: Array.from(store.indexNames).slice(0, 20),
-              sampleRecords: [],
-              numericFields: []
+              scannedRecords: 0,
+              chatRecords: []
             };
             stores.push(storeSummary);
   
@@ -727,15 +699,21 @@
             const cursorRequest = store.openCursor();
             cursorRequest.onsuccess = () => {
               const cursor = cursorRequest.result;
-              if (!cursor || seen >= 50) return;
+              if (!cursor || seen >= 250) return;
               seen += 1;
-              if (storeSummary.sampleRecords.length < 20) {
-                storeSummary.sampleRecords.push({
-                  key: summarizeIndexedDbKey(cursor.key),
-                  value: summarizeStoredValue(cursor.value)
-                });
+              storeSummary.scannedRecords = seen;
+  
+              const chatSummary = summarizeChatRecord(cursor.key, cursor.value, activeChatHints);
+              if (chatSummary) {
+                const shouldKeep =
+                  chatSummary.matchesLastOpened ||
+                  chatSummary.updatedAtRankable ||
+                  chatSummary.hasNearRangeTokenUsage ||
+                  storeSummary.chatRecords.length < 25;
+                if (shouldKeep && storeSummary.chatRecords.length < 60) {
+                  storeSummary.chatRecords.push(chatSummary);
+                }
               }
-              collectNumericFields(cursor.value, `${name}.${storeName}`, storeSummary.numericFields, 40);
               cursor.continue();
             };
           }
@@ -743,101 +721,79 @@
       });
     }
   
-    function summarizeIndexedDbKey(key) {
-      if (typeof key === "string") {
-        return {
-          type: "string",
-          length: key.length,
-          hasChatWord: key.toLowerCase().includes("chat"),
-          hasMessageWord: key.toLowerCase().includes("message"),
-          hasTokenWord: key.toLowerCase().includes("token"),
-          hasContextWord: key.toLowerCase().includes("context")
-        };
-      }
+    function summarizeChatRecord(key, value, activeChatHints) {
+      if (!value || typeof value !== "object" || !Array.isArray(value.messages)) return null;
+  
+      const id = typeof value.id === "string" ? value.id : "";
+      const chatID = typeof value.chatID === "string" ? value.chatID : "";
+      const keyString = typeof key === "string" ? key : "";
+      const lastOpened = parseStoredString(localStorage.getItem("TM_useLastOpenedChatID"));
+      const messages = value.messages || [];
+      const usageValues = collectMessageUsageSummaries(messages);
+      const tokenUsage = value.tokenUsage && typeof value.tokenUsage === "object"
+        ? value.tokenUsage
+        : {};
   
       return {
-        type: typeof key,
-        isArray: Array.isArray(key)
+        keyLength: keyString.length,
+        idLength: id.length,
+        chatIDLength: chatID.length,
+        keyMatchesLastOpened: Boolean(lastOpened && keyString === lastOpened),
+        idMatchesLastOpened: Boolean(lastOpened && id === lastOpened),
+        chatIDMatchesLastOpened: Boolean(lastOpened && chatID === lastOpened),
+        activeHintLengthMatch:
+          keyString.length === activeChatHints.lastOpenedLength ||
+          id.length === activeChatHints.lastOpenedLength ||
+          chatID.length === activeChatHints.lastOpenedLength,
+        messageCount: messages.length,
+        updatedAtMs: normalizeTimestamp(value.updatedAt),
+        createdAtMs: normalizeTimestamp(value.createdAt),
+        updatedAtRankable: Boolean(normalizeTimestamp(value.updatedAt)),
+        tokenUsage: {
+          totalTokens: numberOrNull(tokenUsage.totalTokens),
+          messageTokens: numberOrNull(tokenUsage.messageTokens),
+          totalCachedTokens: numberOrNull(tokenUsage.totalCachedTokens),
+          totalReasoningTokens: numberOrNull(tokenUsage.totalReasoningTokens)
+        },
+        hasNearRangeTokenUsage: [
+          tokenUsage.totalTokens,
+          tokenUsage.messageTokens,
+          tokenUsage.totalCachedTokens,
+          tokenUsage.totalReasoningTokens
+        ].some((value) => typeof value === "number" && value >= 80000 && value <= 2000000),
+        usageValues
       };
     }
   
-    function summarizeStoredValue(value) {
-      if (value === null) return { type: "null" };
-      if (Array.isArray(value)) {
+    function collectMessageUsageSummaries(messages) {
+      const usageMessages = messages
+        .filter((message) => message && typeof message === "object" && message.usage)
+        .slice(-8);
+  
+      return usageMessages.map((message) => {
+        const usage = message.usage || {};
         return {
-          type: "array",
-          length: value.length,
-          firstItemType: value.length ? typeof value[0] : "empty"
+          total_tokens: numberOrNull(usage.total_tokens),
+          prompt_tokens: numberOrNull(usage.prompt_tokens),
+          completion_tokens: numberOrNull(usage.completion_tokens),
+          cache_read_input_tokens: numberOrNull(usage.cache_read_input_tokens),
+          cache_creation_input_tokens: numberOrNull(usage.cache_creation_input_tokens),
+          extended_cache_creation_input_tokens: numberOrNull(usage.extended_cache_creation_input_tokens)
         };
-      }
-      if (typeof value === "object") {
-        return {
-          type: "object",
-          ownKeys: Object.keys(value).slice(0, 20)
-        };
-      }
+      });
+    }
+  
+    function numberOrNull(value) {
+      return typeof value === "number" && Number.isFinite(value) ? value : null;
+    }
+  
+    function normalizeTimestamp(value) {
+      if (typeof value === "number" && Number.isFinite(value)) return value;
       if (typeof value === "string") {
-        return {
-          type: "string",
-          length: value.length,
-          tokenNumbers: extractTokenNumberMentions(value).slice(0, 8),
-          numericNearLimit: parseTokenishNumbers(value)
-            .filter((number) => number >= 80000 && number <= 2000000)
-            .slice(0, 8)
-        };
+        const parsed = Date.parse(value);
+        return Number.isFinite(parsed) ? parsed : null;
       }
-      return {
-        type: typeof value,
-        isNumber: typeof value === "number" ? Number.isFinite(value) : false
-      };
-    }
-  
-    function collectNumericFields(value, source, output, limit, path = "", depth = 0) {
-      if (!value || output.length >= limit || depth > 4) return;
-  
-      if (Array.isArray(value)) {
-        for (let index = 0; index < Math.min(value.length, 12); index += 1) {
-          collectNumericFields(value[index], source, output, limit, `${path}[]`, depth + 1);
-        }
-        return;
-      }
-  
-      if (typeof value !== "object") return;
-  
-      for (const [key, fieldValue] of Object.entries(value)) {
-        if (output.length >= limit) break;
-        const fieldPath = path ? `${path}.${key}` : key;
-        if (typeof fieldValue === "number" && Number.isFinite(fieldValue)) {
-          const lowerPath = fieldPath.toLowerCase();
-          if (
-            lowerPath.includes("token") ||
-            lowerPath.includes("context") ||
-            lowerPath.includes("size") ||
-            (fieldValue >= 80000 && fieldValue <= 2000000)
-          ) {
-            output.push({ source, fieldPath, value: fieldValue });
-          }
-        } else if (typeof fieldValue === "string") {
-          const lowerPath = fieldPath.toLowerCase();
-          const numbers = parseTokenishNumbers(fieldValue)
-            .filter((number) => number >= 80000 && number <= 2000000)
-            .slice(0, 8);
-          if (
-            numbers.length &&
-            (
-              lowerPath.includes("token") ||
-              lowerPath.includes("context") ||
-              lowerPath.includes("size") ||
-              lowerPath.includes("count") ||
-              lowerPath.includes("stat")
-            )
-          ) {
-            output.push({ source, fieldPath, numbers });
-          }
-        } else if (typeof fieldValue === "object" && fieldValue) {
-          collectNumericFields(fieldValue, source, output, limit, fieldPath, depth + 1);
-        }
-      }
+      return null;
     }
   
     if (document.readyState === "loading") {
