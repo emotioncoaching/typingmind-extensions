@@ -166,6 +166,10 @@
           border-radius: 999px;
         }
   
+        #tm-soft-token-warning.tmstw-input-anchored {
+          bottom: auto;
+        }
+  
         #tm-soft-token-warning.tmstw-collapsed .tmstw-head {
           gap: 10px;
           justify-content: center;
@@ -302,6 +306,7 @@
         collapsed = !collapsed;
         el.classList.toggle("tmstw-collapsed", collapsed);
         el.querySelector(".tmstw-toggle").textContent = collapsed ? "▴" : "▾";
+        positionCompactWidget();
       });
   
       return el;
@@ -320,6 +325,7 @@
       el.classList.remove("tmstw-green", "tmstw-orange", "tmstw-red", "tmstw-purple");
       el.classList.add(`tmstw-${band}`);
       el.classList.toggle("tmstw-collapsed", collapsed);
+      positionCompactWidget();
   
       const bar = el.querySelector(".tmstw-bar");
       const main = el.querySelector(".tmstw-main");
@@ -345,6 +351,7 @@
       const el = createOverlay();
       el.classList.remove("tmstw-green", "tmstw-orange", "tmstw-red", "tmstw-purple");
       el.classList.add("tmstw-purple");
+      positionCompactWidget();
   
       el.querySelector(".tmstw-bar").style.width = "0%";
       el.querySelector(".tmstw-main").textContent = "Could not find TypingMind token count";
@@ -357,6 +364,51 @@
       if (n >= 1000000) return `${(n / 1000000).toFixed(2)}M`;
       if (n >= 1000) return `${Math.round(n / 1000)}k`;
       return `${Math.round(n)}`;
+    }
+  
+    function positionCompactWidget() {
+      const el = document.getElementById("tm-soft-token-warning");
+      if (!el || !collapsed || window.matchMedia("(max-width: 700px)").matches) {
+        if (el) {
+          el.classList.remove("tmstw-input-anchored");
+          el.style.top = "";
+        }
+        return;
+      }
+  
+      const input = findPromptInputElement();
+      if (!input) {
+        el.classList.remove("tmstw-input-anchored");
+        el.style.top = "";
+        return;
+      }
+  
+      const inputRect = input.getBoundingClientRect();
+      const widgetRect = el.getBoundingClientRect();
+      const style = getComputedStyle(input);
+      const paddingTop = parseFloat(style.paddingTop) || 0;
+      const lineHeight = parseFloat(style.lineHeight) || 20;
+      const centerY = inputRect.top + paddingTop + (lineHeight / 2);
+      const top = Math.max(8, Math.round(centerY - (widgetRect.height / 2)));
+  
+      el.classList.add("tmstw-input-anchored");
+      el.style.top = `${top}px`;
+    }
+  
+    function findPromptInputElement() {
+      const candidates = Array.from(document.querySelectorAll("textarea, [contenteditable='true'], [role='textbox']"));
+      const visibleCandidates = candidates
+        .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+        .filter(({ rect }) =>
+          rect.width > 120 &&
+          rect.height > 20 &&
+          rect.bottom > window.innerHeight * 0.45 &&
+          rect.top < window.innerHeight
+        );
+  
+      if (!visibleCandidates.length) return null;
+      visibleCandidates.sort((a, b) => b.rect.bottom - a.rect.bottom);
+      return visibleCandidates[0].element;
     }
   
     /********************************************************************
@@ -678,6 +730,11 @@
           refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
         }
       }, CFG.ACTIVE_CHAT_HINT_POLL_MS);
+  
+      window.addEventListener("resize", positionCompactWidget);
+      window.addEventListener("scroll", positionCompactWidget, true);
+      document.addEventListener("focusin", positionCompactWidget);
+      document.addEventListener("input", positionCompactWidget, true);
   
       console.info("[TM Soft Token Warning] Loaded.");
     }
