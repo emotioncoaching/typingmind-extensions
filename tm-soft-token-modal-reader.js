@@ -388,7 +388,7 @@
       const style = getComputedStyle(input);
       const paddingTop = parseFloat(style.paddingTop) || 0;
       const lineHeight = parseFloat(style.lineHeight) || 20;
-      const centerY = inputRect.top + paddingTop + (lineHeight / 2);
+      const centerY = inputRect.top + paddingTop + (lineHeight / 2) + 6;
       const top = Math.max(8, Math.round(centerY - (widgetRect.height / 2)));
   
       el.classList.add("tmstw-input-anchored");
