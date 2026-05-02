@@ -46,6 +46,15 @@
     };
   
     let collapsed = false;
+    const agentDebugCounts = Object.create(null);
+  
+    function agentDebugLog(hypothesisId, location, message, data) {
+      agentDebugCounts[message] = (agentDebugCounts[message] || 0) + 1;
+      if (agentDebugCounts[message] > 8) return;
+      // #region agent log
+      fetch('http://127.0.0.1:7494/ingest/61348057-d424-4ab9-a9bb-6fb7fb004de4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d496fb'},body:JSON.stringify({sessionId:'d496fb',runId:'closed-modal-source-pre-fix',hypothesisId,location,message,data,timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
   
     function createOverlay() {
       let el = document.getElementById("tm-soft-token-warning");
@@ -291,6 +300,10 @@
   
       if (tmValue && tmValue.tokens > 0) {
         render(tmValue.tokens, "TypingMind UI");
+        agentDebugLog("H1,H5", "tm-soft-token-modal-reader.js:update", "rendered TypingMind-visible value", {
+          tokens: tmValue.tokens,
+          source: tmValue.source || "visible scan"
+        });
         return;
       }
   
@@ -298,6 +311,9 @@
         const estimated = estimateVisibleChatTokens();
         if (estimated > 0) {
           render(estimated, "fallback estimate");
+          agentDebugLog("H1", "tm-soft-token-modal-reader.js:update", "rendered fallback estimate", {
+            tokens: estimated
+          });
           return;
         }
       }
@@ -560,15 +576,224 @@
     function start() {
       createOverlay();
       update();
+      scheduleSourceDiscovery();
   
       // A full-document MutationObserver can be triggered by this overlay's own
       // DOM writes. Polling keeps refresh work bounded and avoids feedback loops.
       setInterval(update, CFG.REFRESH_MS);
   
-      window.addEventListener("hashchange", update);
-      window.addEventListener("popstate", update);
+      window.addEventListener("hashchange", () => {
+        update();
+        scheduleSourceDiscovery();
+      });
+      window.addEventListener("popstate", () => {
+        update();
+        scheduleSourceDiscovery();
+      });
   
       console.info("[TM Soft Token Warning] Loaded.");
+    }
+  
+    let sourceDiscoveryTimer = null;
+    function scheduleSourceDiscovery() {
+      if (sourceDiscoveryTimer) window.clearTimeout(sourceDiscoveryTimer);
+      sourceDiscoveryTimer = window.setTimeout(() => {
+        runSourceDiscovery().catch(() => {});
+      }, 1200);
+    }
+  
+    async function runSourceDiscovery() {
+      const bodyText = document.body.textContent || "";
+      agentDebugLog("H1,H5", "tm-soft-token-modal-reader.js:runSourceDiscovery", "closed-modal DOM/token surface", {
+        hasCurrentContextText: /current\s+context\s+length/i.test(bodyText),
+        tokenNumbers: extractTokenNumberMentions(bodyText).slice(0, 12),
+        numericTextNearLimit: parseTokenishNumbers(bodyText)
+          .filter((value) => value >= 80000 && value <= 2000000)
+          .slice(0, 12),
+        urlPathLength: location.pathname.length,
+        hashLength: location.hash.length
+      });
+  
+      agentDebugLog("H2", "tm-soft-token-modal-reader.js:runSourceDiscovery", "localStorage numeric/key surface", inspectLocalStorageSurface());
+      agentDebugLog("H4", "tm-soft-token-modal-reader.js:runSourceDiscovery", "window global candidate surface", inspectWindowSurface());
+      const indexedDbSurface = await inspectIndexedDbSurface();
+      agentDebugLog("H3", "tm-soft-token-modal-reader.js:runSourceDiscovery", "indexedDB numeric/store surface", indexedDbSurface);
+    }
+  
+    function extractTokenNumberMentions(text) {
+      return (text.match(/\d[\d,.]*\s*tokens?/gi) || [])
+        .map((value) => parseTokenishNumbers(value)[0])
+        .filter((value) => Number.isFinite(value));
+    }
+  
+    function inspectLocalStorageSurface() {
+      const candidateKeys = [];
+      const numericFields = [];
+      let keyCount = 0;
+  
+      for (let index = 0; index < localStorage.length; index += 1) {
+        const key = localStorage.key(index) || "";
+        const lowerKey = key.toLowerCase();
+        keyCount += 1;
+        if (
+          lowerKey.includes("chat") ||
+          lowerKey.includes("token") ||
+          lowerKey.includes("context") ||
+          lowerKey.includes("message")
+        ) {
+          candidateKeys.push({
+            key,
+            valueLength: (localStorage.getItem(key) || "").length
+          });
+        }
+  
+        const value = localStorage.getItem(key) || "";
+        collectNumericFieldsFromJson(value, `localStorage:${key}`, numericFields, 25);
+      }
+  
+      return {
+        keyCount,
+        candidateKeys: candidateKeys.slice(0, 25),
+        numericFields: numericFields.slice(0, 30)
+      };
+    }
+  
+    function inspectWindowSurface() {
+      const candidates = [];
+      for (const key of Object.getOwnPropertyNames(window)) {
+        const lowerKey = key.toLowerCase();
+        if (
+          lowerKey.includes("typing") ||
+          lowerKey.includes("chat") ||
+          lowerKey.includes("token") ||
+          lowerKey.includes("context")
+        ) {
+          try {
+            const value = window[key];
+            candidates.push({
+              key,
+              type: typeof value,
+              ownKeys: value && typeof value === "object"
+                ? Object.keys(value).slice(0, 12)
+                : []
+            });
+          } catch (error) {
+            candidates.push({
+              key,
+              errorName: error && error.name ? error.name : "unknown"
+            });
+          }
+        }
+      }
+      return { candidates: candidates.slice(0, 30) };
+    }
+  
+    async function inspectIndexedDbSurface() {
+      if (!indexedDB.databases) {
+        return { supported: false };
+      }
+  
+      const databases = await indexedDB.databases();
+      const summaries = [];
+      for (const dbInfo of databases.slice(0, 8)) {
+        if (!dbInfo.name) continue;
+        const summary = await inspectDatabase(dbInfo.name).catch((error) => ({
+          name: dbInfo.name,
+          errorName: error && error.name ? error.name : "unknown"
+        }));
+        summaries.push(summary);
+      }
+      return { supported: true, databases: summaries };
+    }
+  
+    function inspectDatabase(name) {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open(name);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const db = request.result;
+          const storeNames = Array.from(db.objectStoreNames);
+          const interestingStoreNames = storeNames.slice(0, 8);
+  
+          if (!interestingStoreNames.length) {
+            db.close();
+            resolve({ name, storeNames: storeNames.slice(0, 20), stores: [] });
+            return;
+          }
+  
+          const transaction = db.transaction(interestingStoreNames, "readonly");
+          const stores = [];
+          transaction.oncomplete = () => {
+            db.close();
+            resolve({ name, storeNames: storeNames.slice(0, 20), stores });
+          };
+          transaction.onerror = () => {
+            db.close();
+            reject(transaction.error);
+          };
+  
+          for (const storeName of interestingStoreNames) {
+            const store = transaction.objectStore(storeName);
+            const storeSummary = {
+              name: storeName,
+              keyPath: store.keyPath,
+              indexNames: Array.from(store.indexNames).slice(0, 20),
+              numericFields: []
+            };
+            stores.push(storeSummary);
+  
+            let seen = 0;
+            const cursorRequest = store.openCursor();
+            cursorRequest.onsuccess = () => {
+              const cursor = cursorRequest.result;
+              if (!cursor || seen >= 12) return;
+              seen += 1;
+              collectNumericFields(cursor.value, `${name}.${storeName}`, storeSummary.numericFields, 40);
+              cursor.continue();
+            };
+          }
+        };
+      });
+    }
+  
+    function collectNumericFieldsFromJson(value, source, output, limit) {
+      if (!value || output.length >= limit) return;
+      try {
+        collectNumericFields(JSON.parse(value), source, output, limit);
+      } catch (_) {
+        // Ignore non-JSON settings values.
+      }
+    }
+  
+    function collectNumericFields(value, source, output, limit, path = "", depth = 0) {
+      if (!value || output.length >= limit || depth > 4) return;
+  
+      if (Array.isArray(value)) {
+        for (let index = 0; index < Math.min(value.length, 12); index += 1) {
+          collectNumericFields(value[index], source, output, limit, `${path}[]`, depth + 1);
+        }
+        return;
+      }
+  
+      if (typeof value !== "object") return;
+  
+      for (const [key, fieldValue] of Object.entries(value)) {
+        if (output.length >= limit) break;
+        const fieldPath = path ? `${path}.${key}` : key;
+        if (typeof fieldValue === "number" && Number.isFinite(fieldValue)) {
+          const lowerPath = fieldPath.toLowerCase();
+          if (
+            lowerPath.includes("token") ||
+            lowerPath.includes("context") ||
+            lowerPath.includes("size") ||
+            (fieldValue >= 80000 && fieldValue <= 2000000)
+          ) {
+            output.push({ source, fieldPath, value: fieldValue });
+          }
+        } else if (typeof fieldValue === "object" && fieldValue) {
+          collectNumericFields(fieldValue, source, output, limit, fieldPath, depth + 1);
+        }
+      }
     }
   
     if (document.readyState === "loading") {
