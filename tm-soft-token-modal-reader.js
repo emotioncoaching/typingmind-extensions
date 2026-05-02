@@ -47,7 +47,7 @@
       MAX_TOKEN_SCAN_TEXT_NODES: 1000
     };
   
-    let collapsed = false;
+    let collapsed = true;
     let indexedDbContextValue = null;
     let indexedDbContextRefreshInFlight = false;
     let indexedDbContextRefreshQueued = false;
@@ -125,6 +125,11 @@
           box-shadow: 0 0 0 3px rgba(239,68,68,0.20);
         }
   
+        #tm-soft-token-warning.tmstw-purple .tmstw-dot {
+          background: #a855f7;
+          box-shadow: 0 0 0 3px rgba(168,85,247,0.20);
+        }
+  
         #tm-soft-token-warning .tmstw-toggle {
           appearance: none;
           border: 0;
@@ -173,6 +178,10 @@
   
         #tm-soft-token-warning.tmstw-red .tmstw-bar {
           background: #ef4444;
+        }
+  
+        #tm-soft-token-warning.tmstw-purple .tmstw-bar {
+          background: #a855f7;
         }
   
         #tm-soft-token-warning .tmstw-main {
@@ -250,7 +259,7 @@
             <span class="tmstw-dot"></span>
             <span>Soft token limit</span>
           </div>
-          <button class="tmstw-toggle" title="Collapse / expand">▾</button>
+          <button class="tmstw-toggle" title="Collapse / expand">${collapsed ? "▴" : "▾"}</button>
         </div>
         <div class="tmstw-body">
           <div class="tmstw-bar-wrap">
@@ -283,7 +292,7 @@
         band = "orange";
       }
   
-      el.classList.remove("tmstw-green", "tmstw-orange", "tmstw-red");
+      el.classList.remove("tmstw-green", "tmstw-orange", "tmstw-red", "tmstw-purple");
       el.classList.add(`tmstw-${band}`);
       el.classList.toggle("tmstw-collapsed", collapsed);
   
@@ -309,8 +318,8 @@
   
     function renderNotFound() {
       const el = createOverlay();
-      el.classList.remove("tmstw-green", "tmstw-orange", "tmstw-red");
-      el.classList.add("tmstw-orange");
+      el.classList.remove("tmstw-green", "tmstw-orange", "tmstw-red", "tmstw-purple");
+      el.classList.add("tmstw-purple");
   
       el.querySelector(".tmstw-bar").style.width = "0%";
       el.querySelector(".tmstw-main").textContent = "Could not find TypingMind token count";
