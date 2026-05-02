@@ -7,9 +7,9 @@
      * Goal:
      * - Use TypingMind's own visible context/token count when available.
      * - Show a separate soft warning overlay:
-     *   Green  = below ORANGE_AT_TOKENS
-     *   Orange = ORANGE_AT_TOKENS to RED_AT_TOKENS
-     *   Red    = RED_AT_TOKENS and above
+     *   Green  = up to BLUE_ABOVE_TOKENS
+     *   Blue   = above BLUE_ABOVE_TOKENS to ORANGE_AT_TOKENS
+     *   Orange = ORANGE_AT_TOKENS and above
      *
      * Read-only:
      * - Does not change model settings.
@@ -25,8 +25,8 @@
     window.__TM_SOFT_TOKEN_WARNING_LOADED__ = true;
   
     const CFG = {
-      ORANGE_AT_TOKENS: 80000,
-      RED_AT_TOKENS: 100000,
+      BLUE_ABOVE_TOKENS: 50000,
+      ORANGE_AT_TOKENS: 75000,
   
       // If true, use visible chat text as fallback when the TypingMind UI token
       // number cannot be found.
@@ -119,14 +119,14 @@
           box-shadow: 0 0 0 3px rgba(34,197,94,0.15);
         }
   
+        #tm-soft-token-warning.tmstw-blue .tmstw-dot {
+          background: #3b82f6;
+          box-shadow: 0 0 0 3px rgba(59,130,246,0.18);
+        }
+  
         #tm-soft-token-warning.tmstw-orange .tmstw-dot {
           background: #f59e0b;
           box-shadow: 0 0 0 3px rgba(245,158,11,0.18);
-        }
-  
-        #tm-soft-token-warning.tmstw-red .tmstw-dot {
-          background: #ef4444;
-          box-shadow: 0 0 0 3px rgba(239,68,68,0.20);
         }
   
         #tm-soft-token-warning.tmstw-purple .tmstw-dot {
@@ -201,12 +201,12 @@
           transition: width 160ms ease, background 160ms ease;
         }
   
-        #tm-soft-token-warning.tmstw-orange .tmstw-bar {
-          background: #f59e0b;
+        #tm-soft-token-warning.tmstw-blue .tmstw-bar {
+          background: #3b82f6;
         }
   
-        #tm-soft-token-warning.tmstw-red .tmstw-bar {
-          background: #ef4444;
+        #tm-soft-token-warning.tmstw-orange .tmstw-bar {
+          background: #f59e0b;
         }
   
         #tm-soft-token-warning.tmstw-purple .tmstw-bar {
@@ -229,11 +229,6 @@
           margin-top: 7px;
           padding-top: 7px;
           border-top: 1px solid rgba(127,127,127,0.17);
-        }
-  
-        #tm-soft-token-warning.tmstw-red .tmstw-hint {
-          opacity: 1;
-          font-weight: 700;
         }
   
         @media (max-width: 700px) {
@@ -295,7 +290,7 @@
             <div class="tmstw-bar"></div>
           </div>
           <div class="tmstw-main">Looking for TypingMind token count…</div>
-          <div class="tmstw-sub">Green < 80k · Orange 80k–100k · Red ≥ 100k</div>
+          <div class="tmstw-sub">Green ≤ 50k · Blue > 50k–75k · Orange ≥ 75k</div>
           <div class="tmstw-hint">Tip: switch TypingMind's built-in display to context length/tokens, not cost.</div>
         </div>
       `;
@@ -316,13 +311,13 @@
       const el = createOverlay();
   
       let band = "green";
-      if (tokenCount >= CFG.RED_AT_TOKENS) {
-        band = "red";
-      } else if (tokenCount >= CFG.ORANGE_AT_TOKENS) {
+      if (tokenCount >= CFG.ORANGE_AT_TOKENS) {
         band = "orange";
+      } else if (tokenCount > CFG.BLUE_ABOVE_TOKENS) {
+        band = "blue";
       }
   
-      el.classList.remove("tmstw-green", "tmstw-orange", "tmstw-red", "tmstw-purple");
+      el.classList.remove("tmstw-green", "tmstw-blue", "tmstw-orange", "tmstw-purple");
       el.classList.add(`tmstw-${band}`);
       el.classList.toggle("tmstw-collapsed", collapsed);
       positionCompactWidget();
@@ -332,24 +327,24 @@
       const sub = el.querySelector(".tmstw-sub");
       const hint = el.querySelector(".tmstw-hint");
   
-      const pctToRed = Math.min(100, Math.round((tokenCount / CFG.RED_AT_TOKENS) * 100));
-      bar.style.width = `${pctToRed}%`;
+      const pctToOrange = Math.min(100, Math.round((tokenCount / CFG.ORANGE_AT_TOKENS) * 100));
+      bar.style.width = `${pctToOrange}%`;
   
-      main.textContent = `${formatTokens(tokenCount)} tokens · ${pctToRed}% of red limit`;
-      sub.textContent = `Source: ${source} · Orange at ${formatTokens(CFG.ORANGE_AT_TOKENS)} · Red at ${formatTokens(CFG.RED_AT_TOKENS)}`;
+      main.textContent = `${formatTokens(tokenCount)} tokens · ${pctToOrange}% of orange threshold`;
+      sub.textContent = `Source: ${source} · Blue above ${formatTokens(CFG.BLUE_ABOVE_TOKENS)} · Orange at ${formatTokens(CFG.ORANGE_AT_TOKENS)}`;
   
       if (band === "green") {
         hint.textContent = "Green: no action needed yet.";
-      } else if (band === "orange") {
-        hint.textContent = "Orange: prepare a handoff summary or compacting point soon.";
+      } else if (band === "blue") {
+        hint.textContent = "Blue: context is growing, but still below the warning range.";
       } else {
-        hint.textContent = "Red: soft limit reached. Move, fork, or compact this chat now.";
+        hint.textContent = "Orange: prepare a handoff summary or compacting point soon.";
       }
     }
   
     function renderNotFound() {
       const el = createOverlay();
-      el.classList.remove("tmstw-green", "tmstw-orange", "tmstw-red", "tmstw-purple");
+      el.classList.remove("tmstw-green", "tmstw-blue", "tmstw-orange", "tmstw-purple");
       el.classList.add("tmstw-purple");
       positionCompactWidget();
   
@@ -497,7 +492,7 @@
           if (parsed >= 1000) score += 1;
           if (parsed > 2000000) score -= 10;
   
-          // Your relevant range is around 80k–100k, but allow lower/higher.
+          // Your relevant range starts around 50k, but allow lower/higher.
           if (parsed >= 1000 && parsed <= 2000000) {
             candidates.push({
               tokens: parsed,

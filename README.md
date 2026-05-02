@@ -38,9 +38,9 @@ Its purpose is to give early visual feedback while prompting, especially when a 
 
 Color states:
 
-- Green: below `80,000` tokens.
-- Orange: `80,000` to below `100,000` tokens.
-- Red: `100,000` tokens or more.
+- Green: up to `50,000` tokens.
+- Blue: above `50,000` and below `75,000` tokens.
+- Orange: `75,000` tokens or more.
 - Purple: no TypingMind token/context count could be found.
 
 Desktop behavior:
@@ -347,16 +347,16 @@ This makes the mobile widget a passive status signal only.
 Colors are intentionally semantic:
 
 - Green: safe.
+- Blue: context is growing.
 - Orange: approaching soft limit.
-- Red: soft limit reached.
 - Purple: token source unavailable.
 
 CSS state classes:
 
 ```text
 tmstw-green
+tmstw-blue
 tmstw-orange
-tmstw-red
 tmstw-purple
 ```
 
