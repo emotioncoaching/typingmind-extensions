@@ -161,7 +161,7 @@
   
         #tm-soft-token-warning.tmstw-collapsed {
           right: 16px;
-          bottom: calc(env(safe-area-inset-bottom, 0px) + 36px);
+          bottom: calc(env(safe-area-inset-bottom, 0px) + 48px);
           width: auto;
           border-radius: 999px;
         }
