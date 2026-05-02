@@ -46,6 +46,15 @@
     };
   
     let collapsed = false;
+    const agentDebugLogCounts = Object.create(null);
+  
+    function agentDebugLog(hypothesisId, location, message, data) {
+      agentDebugLogCounts[message] = (agentDebugLogCounts[message] || 0) + 1;
+      if (agentDebugLogCounts[message] > 12) return;
+      // #region agent log
+      fetch('http://127.0.0.1:7494/ingest/61348057-d424-4ab9-a9bb-6fb7fb004de4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d496fb'},body:JSON.stringify({sessionId:'d496fb',runId:'display-pre-fix',hypothesisId,location,message,data,timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
   
     function createOverlay() {
       let el = document.getElementById("tm-soft-token-warning");
@@ -291,6 +300,12 @@
   
       if (tmValue && tmValue.tokens > 0) {
         render(tmValue.tokens, "TypingMind UI");
+        agentDebugLog("H1,H2,H3,H4", "tm-soft-token-modal-reader.js:update", "rendered TypingMind UI token value", {
+          tokens: tmValue.tokens,
+          score: tmValue.score,
+          scannedLineCount: tmValue.scannedLineCount,
+          hasBodyContextLengthText: tmValue.hasBodyContextLengthText
+        });
         return;
       }
   
@@ -298,11 +313,15 @@
         const estimated = estimateVisibleChatTokens();
         if (estimated > 0) {
           render(estimated, "fallback estimate");
+          agentDebugLog("H1,H4", "tm-soft-token-modal-reader.js:update", "rendered fallback token estimate", {
+            tokens: estimated
+          });
           return;
         }
       }
   
       renderNotFound();
+      agentDebugLog("H1,H4", "tm-soft-token-modal-reader.js:update", "rendered token value not found", {});
     }
   
     function findTypingMindVisibleTokenCount() {
@@ -311,6 +330,12 @@
         CFG.MAX_TOKEN_SCAN_TEXT_NODES,
         CFG.MAX_TOKEN_SCAN_TEXT_CHARS
       );
+      const bodyText = document.body.textContent || "";
+      const hasBodyContextLengthText = bodyText.toLowerCase().includes("current context length");
+      const bodyTokenNumbers = (bodyText.match(/\d[\d,.]*\s*tokens?/gi) || [])
+        .slice(0, 12)
+        .map((text) => parseTokenishNumbers(text)[0])
+        .filter((value) => Number.isFinite(value));
   
       const candidates = [];
   
@@ -356,18 +381,39 @@
           if (parsed >= 1000 && parsed <= 2000000) {
             candidates.push({
               tokens: parsed,
-              line,
-              score
+              score,
+              lineLength: line.length,
+              hasTokenWord,
+              hasContextWord: lower.includes("context"),
+              hasSlash: line.includes("/"),
+              hasOfWord: lower.includes("of")
             });
           }
         }
       }
   
-      if (!candidates.length) return null;
+      if (!candidates.length) {
+        agentDebugLog("H1,H2,H4", "tm-soft-token-modal-reader.js:findTypingMindVisibleTokenCount", "token scan found no candidates", {
+          scannedLineCount: lines.length,
+          hasBodyContextLengthText,
+          bodyTokenNumbers
+        });
+        return null;
+      }
   
       candidates.sort((a, b) => b.score - a.score || b.tokens - a.tokens);
+      agentDebugLog("H1,H2,H3", "tm-soft-token-modal-reader.js:findTypingMindVisibleTokenCount", "token scan selected candidate", {
+        scannedLineCount: lines.length,
+        hasBodyContextLengthText,
+        bodyTokenNumbers,
+        topCandidates: candidates.slice(0, 8)
+      });
   
-      return candidates[0];
+      return {
+        ...candidates[0],
+        scannedLineCount: lines.length,
+        hasBodyContextLengthText
+      };
     }
   
     function collectTextLines(root, maxNodes, maxChars) {
@@ -475,9 +521,17 @@
       const words = normalized.match(/\S+/g) || [];
       const wordEstimate = words.length * 1.3;
   
-      return Math.ceil(
+      const estimate = Math.ceil(
         Math.max(charEstimate, wordEstimate) * CFG.FALLBACK_TOKEN_MULTIPLIER
       );
+      agentDebugLog("H1,H4", "tm-soft-token-modal-reader.js:estimateVisibleChatTokens", "fallback estimate calculated", {
+        estimate,
+        rootTag: root.tagName,
+        rootElementId: root.getAttribute("data-element-id") || root.id || "",
+        textLength: text.length,
+        wordCount: words.length
+      });
+      return estimate;
     }
   
     function extractVisibleText(root) {
