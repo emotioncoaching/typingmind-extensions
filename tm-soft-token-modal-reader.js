@@ -34,6 +34,8 @@
   
       // Refresh rate.
       REFRESH_MS: 2000,
+      ACTIVE_CHAT_HINT_POLL_MS: 750,
+      ACTIVE_CHAT_STABLE_TICKS: 2,
   
       // Optional multiplier for fallback estimate only.
       FALLBACK_TOKEN_MULTIPLIER: 1.1,
@@ -52,6 +54,9 @@
     const agentDebugCounts = Object.create(null);
     let lastRenderSignature = "";
     let lastActiveHintSignature = "";
+    let activeHintStableTicks = 0;
+    let stableRefreshSignature = "";
+    let activeChatSwitchPending = false;
   
     function agentDebugLog(hypothesisId, location, message, data) {
       agentDebugCounts[message] = (agentDebugCounts[message] || 0) + 1;
@@ -325,6 +330,11 @@
      ********************************************************************/
   
     function update() {
+      if (activeChatSwitchPending) {
+        agentDebugLog("H4", "tm-soft-token-modal-reader.js:update", "render suppressed during active chat switch", getActiveDebugHints());
+        return;
+      }
+  
       const tmValue = findTypingMindVisibleTokenCount();
   
       if (tmValue && tmValue.tokens > 0) {
@@ -633,25 +643,34 @@
       setInterval(() => {
         const hints = getActiveDebugHints();
         const signature = `${hints.lastOpenedHash}:${hints.locationHashHash}`;
-        if (signature === lastActiveHintSignature) return;
-        lastActiveHintSignature = signature;
-        agentDebugLog("H1,H2", "tm-soft-token-modal-reader.js:start", "active chat hint changed", hints);
-        indexedDbContextValue = null;
-        refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
-        update();
-      }, 750);
+        if (signature !== lastActiveHintSignature) {
+          lastActiveHintSignature = signature;
+          activeHintStableTicks = 0;
+          stableRefreshSignature = "";
+          activeChatSwitchPending = true;
+          agentDebugLog("H1,H2", "tm-soft-token-modal-reader.js:start", "active chat hint changed", hints);
+          return;
+        }
+  
+        activeHintStableTicks += 1;
+        if (
+          activeHintStableTicks === CFG.ACTIVE_CHAT_STABLE_TICKS &&
+          stableRefreshSignature !== signature
+        ) {
+          stableRefreshSignature = signature;
+          agentDebugLog("H1,H2", "tm-soft-token-modal-reader.js:start", "active chat hint stable", {
+            stableMs: CFG.ACTIVE_CHAT_HINT_POLL_MS * CFG.ACTIVE_CHAT_STABLE_TICKS,
+            ...hints
+          });
+          refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
+        }
+      }, CFG.ACTIVE_CHAT_HINT_POLL_MS);
   
       window.addEventListener("hashchange", () => {
         agentDebugLog("H2", "tm-soft-token-modal-reader.js:hashchange", "navigation event fired", getActiveDebugHints());
-        indexedDbContextValue = null;
-        refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
-        update();
       });
       window.addEventListener("popstate", () => {
         agentDebugLog("H2", "tm-soft-token-modal-reader.js:popstate", "navigation event fired", getActiveDebugHints());
-        indexedDbContextValue = null;
-        refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
-        update();
       });
       document.addEventListener("click", (event) => {
         const target = event.target && event.target.closest
@@ -683,6 +702,9 @@
       indexedDbContextRefreshInFlight = true;
       const startHints = getActiveDebugHints();
       const startSignature = getActiveHintSignature();
+      const startedDuringSwitch = activeChatSwitchPending;
+      const startedAfterStableSwitch =
+        startedDuringSwitch && Boolean(stableRefreshSignature) && startSignature === stableRefreshSignature;
       agentDebugLog("H1,H5", "tm-soft-token-modal-reader.js:refreshActiveChatContextFromIndexedDb", "refresh started", startHints);
       try {
         const value = await readActiveChatContextFromIndexedDb();
@@ -693,11 +715,19 @@
           indexedDbContextRefreshQueued = true;
         } else if (value && value.tokens > 0) {
           indexedDbContextValue = value;
+        } else if (startedAfterStableSwitch) {
+          indexedDbContextValue = null;
+        }
+        if (!activeChatChangedDuringRead && startedAfterStableSwitch) {
+          activeChatSwitchPending = false;
         }
         agentDebugLog("H1,H3", "tm-soft-token-modal-reader.js:refreshActiveChatContextFromIndexedDb", "refresh finished", {
           startHints,
           endHints,
           activeChatChangedDuringRead,
+          startedDuringSwitch,
+          startedAfterStableSwitch,
+          activeChatSwitchPending,
           selectedTokens: value && value.tokens ? value.tokens : null,
           selectedMessageCount: value && value.messageCount ? value.messageCount : null,
           retainedTokens: indexedDbContextValue && indexedDbContextValue.tokens ? indexedDbContextValue.tokens : null
