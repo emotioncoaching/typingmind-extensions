@@ -48,6 +48,7 @@
     let collapsed = false;
     let indexedDbContextValue = null;
     let indexedDbContextRefreshInFlight = false;
+    let indexedDbContextRefreshQueued = false;
     const agentDebugCounts = Object.create(null);
     let lastRenderSignature = "";
     let lastActiveHintSignature = "";
@@ -77,6 +78,11 @@
         locationHashLength: location.hash.length,
         locationHashHash: hashShort(location.hash)
       };
+    }
+  
+    function getActiveHintSignature() {
+      const hints = getActiveDebugHints();
+      return `${hints.lastOpenedHash}:${hints.locationHashHash}`;
     }
   
     function createOverlay() {
@@ -630,6 +636,9 @@
         if (signature === lastActiveHintSignature) return;
         lastActiveHintSignature = signature;
         agentDebugLog("H1,H2", "tm-soft-token-modal-reader.js:start", "active chat hint changed", hints);
+        indexedDbContextValue = null;
+        refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
+        update();
       }, 750);
   
       window.addEventListener("hashchange", () => {
@@ -667,20 +676,28 @@
   
     async function refreshActiveChatContextFromIndexedDb() {
       if (indexedDbContextRefreshInFlight) {
+        indexedDbContextRefreshQueued = true;
         agentDebugLog("H5", "tm-soft-token-modal-reader.js:refreshActiveChatContextFromIndexedDb", "refresh skipped while in flight", getActiveDebugHints());
         return indexedDbContextValue;
       }
       indexedDbContextRefreshInFlight = true;
       const startHints = getActiveDebugHints();
+      const startSignature = getActiveHintSignature();
       agentDebugLog("H1,H5", "tm-soft-token-modal-reader.js:refreshActiveChatContextFromIndexedDb", "refresh started", startHints);
       try {
         const value = await readActiveChatContextFromIndexedDb();
-        if (value && value.tokens > 0) {
+        const endHints = getActiveDebugHints();
+        const endSignature = getActiveHintSignature();
+        const activeChatChangedDuringRead = startSignature !== endSignature;
+        if (activeChatChangedDuringRead) {
+          indexedDbContextRefreshQueued = true;
+        } else if (value && value.tokens > 0) {
           indexedDbContextValue = value;
         }
         agentDebugLog("H1,H3", "tm-soft-token-modal-reader.js:refreshActiveChatContextFromIndexedDb", "refresh finished", {
           startHints,
-          endHints: getActiveDebugHints(),
+          endHints,
+          activeChatChangedDuringRead,
           selectedTokens: value && value.tokens ? value.tokens : null,
           selectedMessageCount: value && value.messageCount ? value.messageCount : null,
           retainedTokens: indexedDbContextValue && indexedDbContextValue.tokens ? indexedDbContextValue.tokens : null
@@ -688,6 +705,10 @@
         return indexedDbContextValue;
       } finally {
         indexedDbContextRefreshInFlight = false;
+        if (indexedDbContextRefreshQueued) {
+          indexedDbContextRefreshQueued = false;
+          refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
+        }
       }
     }
   
