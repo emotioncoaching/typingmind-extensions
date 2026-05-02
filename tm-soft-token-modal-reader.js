@@ -46,6 +46,8 @@
     };
   
     let collapsed = false;
+    let indexedDbContextValue = null;
+    let indexedDbContextRefreshInFlight = false;
     const agentDebugCounts = Object.create(null);
   
     function agentDebugLog(hypothesisId, location, message, data) {
@@ -303,6 +305,16 @@
         agentDebugLog("H1,H5", "tm-soft-token-modal-reader.js:update", "rendered TypingMind-visible value", {
           tokens: tmValue.tokens,
           source: tmValue.source || "visible scan"
+        });
+        return;
+      }
+  
+      if (indexedDbContextValue && indexedDbContextValue.tokens > 0) {
+        render(indexedDbContextValue.tokens, "TypingMind data");
+        agentDebugLog("H3", "tm-soft-token-modal-reader.js:update", "rendered IndexedDB active chat value", {
+          tokens: indexedDbContextValue.tokens,
+          source: indexedDbContextValue.source,
+          messageCount: indexedDbContextValue.messageCount
         });
         return;
       }
@@ -575,18 +587,26 @@
   
     function start() {
       createOverlay();
+      refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
       update();
       scheduleSourceDiscovery();
   
       // A full-document MutationObserver can be triggered by this overlay's own
       // DOM writes. Polling keeps refresh work bounded and avoids feedback loops.
       setInterval(update, CFG.REFRESH_MS);
+      setInterval(() => {
+        refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
+      }, CFG.REFRESH_MS * 3);
   
       window.addEventListener("hashchange", () => {
+        indexedDbContextValue = null;
+        refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
         update();
         scheduleSourceDiscovery();
       });
       window.addEventListener("popstate", () => {
+        indexedDbContextValue = null;
+        refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
         update();
         scheduleSourceDiscovery();
       });
@@ -656,6 +676,99 @@
       } catch (_) {
         return value;
       }
+    }
+  
+    async function refreshActiveChatContextFromIndexedDb() {
+      if (indexedDbContextRefreshInFlight) return indexedDbContextValue;
+      indexedDbContextRefreshInFlight = true;
+      try {
+        const value = await readActiveChatContextFromIndexedDb();
+        if (value && value.tokens > 0) {
+          indexedDbContextValue = value;
+          agentDebugLog("H3", "tm-soft-token-modal-reader.js:refreshActiveChatContextFromIndexedDb", "active chat IndexedDB value selected", {
+            tokens: value.tokens,
+            source: value.source,
+            messageCount: value.messageCount,
+            totalTokens: value.totalTokens,
+            totalCachedTokens: value.totalCachedTokens
+          });
+        }
+        return indexedDbContextValue;
+      } finally {
+        indexedDbContextRefreshInFlight = false;
+      }
+    }
+  
+    function readActiveChatContextFromIndexedDb() {
+      const lastOpened = parseStoredString(localStorage.getItem("TM_useLastOpenedChatID"));
+      if (!lastOpened) return Promise.resolve(null);
+  
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open("keyval-store");
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const db = request.result;
+          if (!db.objectStoreNames.contains("keyval")) {
+            db.close();
+            resolve(null);
+            return;
+          }
+  
+          const transaction = db.transaction("keyval", "readonly");
+          const store = transaction.objectStore("keyval");
+          const cursorRequest = store.openCursor();
+          let resolved = false;
+  
+          transaction.oncomplete = () => {
+            db.close();
+            if (!resolved) resolve(null);
+          };
+          transaction.onerror = () => {
+            db.close();
+            reject(transaction.error);
+          };
+  
+          cursorRequest.onsuccess = () => {
+            const cursor = cursorRequest.result;
+            if (!cursor) return;
+  
+            const value = cursor.value;
+            if (
+              value &&
+              typeof value === "object" &&
+              Array.isArray(value.messages) &&
+              (value.id === lastOpened || value.chatID === lastOpened)
+            ) {
+              const tokens = getLastUsageTotalTokens(value.messages);
+              if (tokens && tokens >= 1000 && tokens <= 2000000) {
+                resolved = true;
+                const tokenUsage = value.tokenUsage && typeof value.tokenUsage === "object"
+                  ? value.tokenUsage
+                  : {};
+                resolve({
+                  tokens,
+                  source: "active chat usage",
+                  messageCount: value.messages.length,
+                  totalTokens: numberOrNull(tokenUsage.totalTokens),
+                  totalCachedTokens: numberOrNull(tokenUsage.totalCachedTokens)
+                });
+                return;
+              }
+            }
+  
+            cursor.continue();
+          };
+        };
+      });
+    }
+  
+    function getLastUsageTotalTokens(messages) {
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const usage = messages[index] && messages[index].usage;
+        const totalTokens = usage && numberOrNull(usage.total_tokens);
+        if (totalTokens) return totalTokens;
+      }
+      return null;
     }
   
     function inspectDatabase(name, activeChatHints) {
