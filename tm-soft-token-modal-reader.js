@@ -610,12 +610,11 @@
         numericTextNearLimit: parseTokenishNumbers(bodyText)
           .filter((value) => value >= 80000 && value <= 2000000)
           .slice(0, 12),
+        numericTextSources: inspectDomNumericTextSurface(),
         urlPathLength: location.pathname.length,
         hashLength: location.hash.length
       });
   
-      agentDebugLog("H2", "tm-soft-token-modal-reader.js:runSourceDiscovery", "localStorage numeric/key surface", inspectLocalStorageSurface());
-      agentDebugLog("H4", "tm-soft-token-modal-reader.js:runSourceDiscovery", "window global candidate surface", inspectWindowSurface());
       const indexedDbSurface = await inspectIndexedDbSurface();
       agentDebugLog("H3", "tm-soft-token-modal-reader.js:runSourceDiscovery", "indexedDB numeric/store surface", indexedDbSurface);
     }
@@ -626,66 +625,47 @@
         .filter((value) => Number.isFinite(value));
     }
   
-    function inspectLocalStorageSurface() {
-      const candidateKeys = [];
-      const numericFields = [];
-      let keyCount = 0;
-  
-      for (let index = 0; index < localStorage.length; index += 1) {
-        const key = localStorage.key(index) || "";
-        const lowerKey = key.toLowerCase();
-        keyCount += 1;
-        if (
-          lowerKey.includes("chat") ||
-          lowerKey.includes("token") ||
-          lowerKey.includes("context") ||
-          lowerKey.includes("message")
-        ) {
-          candidateKeys.push({
-            key,
-            valueLength: (localStorage.getItem(key) || "").length
-          });
-        }
-  
-        const value = localStorage.getItem(key) || "";
-        collectNumericFieldsFromJson(value, `localStorage:${key}`, numericFields, 25);
-      }
-  
-      return {
-        keyCount,
-        candidateKeys: candidateKeys.slice(0, 25),
-        numericFields: numericFields.slice(0, 30)
-      };
-    }
-  
-    function inspectWindowSurface() {
-      const candidates = [];
-      for (const key of Object.getOwnPropertyNames(window)) {
-        const lowerKey = key.toLowerCase();
-        if (
-          lowerKey.includes("typing") ||
-          lowerKey.includes("chat") ||
-          lowerKey.includes("token") ||
-          lowerKey.includes("context")
-        ) {
-          try {
-            const value = window[key];
-            candidates.push({
-              key,
-              type: typeof value,
-              ownKeys: value && typeof value === "object"
-                ? Object.keys(value).slice(0, 12)
-                : []
-            });
-          } catch (error) {
-            candidates.push({
-              key,
-              errorName: error && error.name ? error.name : "unknown"
-            });
+    function inspectDomNumericTextSurface() {
+      const matches = [];
+      const walker = document.createTreeWalker(
+        document.body,
+        NodeFilter.SHOW_TEXT,
+        {
+          acceptNode(node) {
+            const parent = node.parentElement;
+            if (!parent || parent.closest("#tm-soft-token-warning, script, style, svg")) {
+              return NodeFilter.FILTER_REJECT;
+            }
+            const numbers = parseTokenishNumbers(node.nodeValue)
+              .filter((value) => value >= 80000 && value <= 2000000);
+            return numbers.length
+              ? NodeFilter.FILTER_ACCEPT
+              : NodeFilter.FILTER_REJECT;
           }
         }
+      );
+  
+      let node;
+      while ((node = walker.nextNode()) && matches.length < 20) {
+        const parent = node.parentElement;
+        const numbers = parseTokenishNumbers(node.nodeValue)
+          .filter((value) => value >= 80000 && value <= 2000000);
+        const lowerText = node.nodeValue.toLowerCase();
+        matches.push({
+          numbers,
+          tagName: parent.tagName,
+          dataElementId: parent.getAttribute("data-element-id") || "",
+          role: parent.getAttribute("role") || "",
+          hasTokenWord: lowerText.includes("token"),
+          hasContextWord: lowerText.includes("context"),
+          hasCostWord: lowerText.includes("cost") || lowerText.includes("price") || lowerText.includes("$"),
+          textLength: node.nodeValue.length,
+          parentTextLength: parent.textContent ? parent.textContent.length : 0,
+          nearestDialog: Boolean(parent.closest('[role="dialog"], [aria-modal="true"]'))
+        });
       }
-      return { candidates: candidates.slice(0, 30) };
+  
+      return matches;
     }
   
     async function inspectIndexedDbSurface() {
@@ -738,6 +718,7 @@
               name: storeName,
               keyPath: store.keyPath,
               indexNames: Array.from(store.indexNames).slice(0, 20),
+              sampleRecords: [],
               numericFields: []
             };
             stores.push(storeSummary);
@@ -746,8 +727,14 @@
             const cursorRequest = store.openCursor();
             cursorRequest.onsuccess = () => {
               const cursor = cursorRequest.result;
-              if (!cursor || seen >= 12) return;
+              if (!cursor || seen >= 50) return;
               seen += 1;
+              if (storeSummary.sampleRecords.length < 20) {
+                storeSummary.sampleRecords.push({
+                  key: summarizeIndexedDbKey(cursor.key),
+                  value: summarizeStoredValue(cursor.value)
+                });
+              }
               collectNumericFields(cursor.value, `${name}.${storeName}`, storeSummary.numericFields, 40);
               cursor.continue();
             };
@@ -756,13 +743,53 @@
       });
     }
   
-    function collectNumericFieldsFromJson(value, source, output, limit) {
-      if (!value || output.length >= limit) return;
-      try {
-        collectNumericFields(JSON.parse(value), source, output, limit);
-      } catch (_) {
-        // Ignore non-JSON settings values.
+    function summarizeIndexedDbKey(key) {
+      if (typeof key === "string") {
+        return {
+          type: "string",
+          length: key.length,
+          hasChatWord: key.toLowerCase().includes("chat"),
+          hasMessageWord: key.toLowerCase().includes("message"),
+          hasTokenWord: key.toLowerCase().includes("token"),
+          hasContextWord: key.toLowerCase().includes("context")
+        };
       }
+  
+      return {
+        type: typeof key,
+        isArray: Array.isArray(key)
+      };
+    }
+  
+    function summarizeStoredValue(value) {
+      if (value === null) return { type: "null" };
+      if (Array.isArray(value)) {
+        return {
+          type: "array",
+          length: value.length,
+          firstItemType: value.length ? typeof value[0] : "empty"
+        };
+      }
+      if (typeof value === "object") {
+        return {
+          type: "object",
+          ownKeys: Object.keys(value).slice(0, 20)
+        };
+      }
+      if (typeof value === "string") {
+        return {
+          type: "string",
+          length: value.length,
+          tokenNumbers: extractTokenNumberMentions(value).slice(0, 8),
+          numericNearLimit: parseTokenishNumbers(value)
+            .filter((number) => number >= 80000 && number <= 2000000)
+            .slice(0, 8)
+        };
+      }
+      return {
+        type: typeof value,
+        isNumber: typeof value === "number" ? Number.isFinite(value) : false
+      };
     }
   
     function collectNumericFields(value, source, output, limit, path = "", depth = 0) {
@@ -789,6 +816,23 @@
             (fieldValue >= 80000 && fieldValue <= 2000000)
           ) {
             output.push({ source, fieldPath, value: fieldValue });
+          }
+        } else if (typeof fieldValue === "string") {
+          const lowerPath = fieldPath.toLowerCase();
+          const numbers = parseTokenishNumbers(fieldValue)
+            .filter((number) => number >= 80000 && number <= 2000000)
+            .slice(0, 8);
+          if (
+            numbers.length &&
+            (
+              lowerPath.includes("token") ||
+              lowerPath.includes("context") ||
+              lowerPath.includes("size") ||
+              lowerPath.includes("count") ||
+              lowerPath.includes("stat")
+            )
+          ) {
+            output.push({ source, fieldPath, numbers });
           }
         } else if (typeof fieldValue === "object" && fieldValue) {
           collectNumericFields(fieldValue, source, output, limit, fieldPath, depth + 1);
