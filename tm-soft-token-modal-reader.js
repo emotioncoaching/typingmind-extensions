@@ -36,7 +36,13 @@
       REFRESH_MS: 2000,
   
       // Optional multiplier for fallback estimate only.
-      FALLBACK_TOKEN_MULTIPLIER: 1.1
+      FALLBACK_TOKEN_MULTIPLIER: 1.1,
+  
+      // Keep fallback scanning bounded on very large chats.
+      MAX_FALLBACK_TEXT_CHARS: 200000,
+      MAX_FALLBACK_TEXT_NODES: 1500,
+      MAX_TOKEN_SCAN_TEXT_CHARS: 100000,
+      MAX_TOKEN_SCAN_TEXT_NODES: 1000
     };
   
     let collapsed = false;
@@ -300,11 +306,11 @@
     }
   
     function findTypingMindVisibleTokenCount() {
-      const bodyText = document.body.innerText || "";
-      const lines = bodyText
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean);
+      const lines = collectTextLines(
+        document.body,
+        CFG.MAX_TOKEN_SCAN_TEXT_NODES,
+        CFG.MAX_TOKEN_SCAN_TEXT_CHARS
+      );
   
       const candidates = [];
   
@@ -362,6 +368,50 @@
       candidates.sort((a, b) => b.score - a.score || b.tokens - a.tokens);
   
       return candidates[0];
+    }
+  
+    function collectTextLines(root, maxNodes, maxChars) {
+      const lines = [];
+      let nodeCount = 0;
+      let totalLength = 0;
+  
+      const walker = document.createTreeWalker(
+        root,
+        NodeFilter.SHOW_TEXT,
+        {
+          acceptNode(node) {
+            const parent = node.parentElement;
+            if (!parent) return NodeFilter.FILTER_REJECT;
+  
+            if (
+              parent.closest(
+                "#tm-soft-token-warning, script, style, svg"
+              )
+            ) {
+              return NodeFilter.FILTER_REJECT;
+            }
+  
+            const value = node.nodeValue.trim();
+            if (!value) return NodeFilter.FILTER_REJECT;
+  
+            return NodeFilter.FILTER_ACCEPT;
+          }
+        }
+      );
+  
+      let node;
+      while ((node = walker.nextNode())) {
+        const value = node.nodeValue.trim();
+        lines.push(value);
+        nodeCount += 1;
+        totalLength += value.length;
+  
+        if (nodeCount >= maxNodes || totalLength >= maxChars) {
+          break;
+        }
+      }
+  
+      return lines;
     }
   
     function parseTokenishNumbers(text) {
@@ -432,6 +482,8 @@
   
     function extractVisibleText(root) {
       const pieces = [];
+      let nodeCount = 0;
+      let totalLength = 0;
   
       const walker = document.createTreeWalker(
         root,
@@ -468,7 +520,17 @@
   
       let node;
       while ((node = walker.nextNode())) {
-        pieces.push(node.nodeValue.trim());
+        const value = node.nodeValue.trim();
+        pieces.push(value);
+        nodeCount += 1;
+        totalLength += value.length;
+  
+        if (
+          nodeCount >= CFG.MAX_FALLBACK_TEXT_NODES ||
+          totalLength >= CFG.MAX_FALLBACK_TEXT_CHARS
+        ) {
+          break;
+        }
       }
   
       return pieces.join("\n");
@@ -478,13 +540,8 @@
       createOverlay();
       update();
   
-      const observer = new MutationObserver(() => update());
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-        characterData: true
-      });
-  
+      // A full-document MutationObserver can be triggered by this overlay's own
+      // DOM writes. Polling keeps refresh work bounded and avoids feedback loops.
       setInterval(update, CFG.REFRESH_MS);
   
       window.addEventListener("hashchange", update);
