@@ -107,6 +107,10 @@
           font-weight: 700;
         }
   
+        #tm-soft-token-warning .tmstw-title span:not(.tmstw-dot) {
+          display: none;
+        }
+  
         #tm-soft-token-warning .tmstw-dot {
           width: 10px;
           height: 10px;
@@ -153,6 +157,27 @@
   
         #tm-soft-token-warning.tmstw-collapsed .tmstw-body {
           display: none;
+        }
+  
+        #tm-soft-token-warning.tmstw-collapsed {
+          right: 16px;
+          bottom: calc(env(safe-area-inset-bottom, 0px) + 76px);
+          width: auto;
+          border-radius: 999px;
+        }
+  
+        #tm-soft-token-warning.tmstw-collapsed .tmstw-head {
+          gap: 10px;
+          justify-content: center;
+          padding: 8px 10px;
+        }
+  
+        #tm-soft-token-warning.tmstw-collapsed .tmstw-title {
+          gap: 0;
+        }
+  
+        #tm-soft-token-warning.tmstw-collapsed .tmstw-toggle {
+          padding: 1px 4px;
         }
   
         #tm-soft-token-warning .tmstw-bar-wrap {
@@ -252,7 +277,7 @@
   
       el = document.createElement("div");
       el.id = "tm-soft-token-warning";
-      el.className = "tmstw-green";
+      el.className = collapsed ? "tmstw-green tmstw-collapsed" : "tmstw-green";
       el.innerHTML = `
         <div class="tmstw-head">
           <div class="tmstw-title">
