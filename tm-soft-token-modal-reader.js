@@ -48,6 +48,36 @@
     let collapsed = false;
     let indexedDbContextValue = null;
     let indexedDbContextRefreshInFlight = false;
+    const agentDebugCounts = Object.create(null);
+    let lastRenderSignature = "";
+    let lastActiveHintSignature = "";
+  
+    function agentDebugLog(hypothesisId, location, message, data) {
+      agentDebugCounts[message] = (agentDebugCounts[message] || 0) + 1;
+      if (agentDebugCounts[message] > 20) return;
+      // #region agent log
+      fetch('http://127.0.0.1:7494/ingest/61348057-d424-4ab9-a9bb-6fb7fb004de4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d496fb'},body:JSON.stringify({sessionId:'d496fb',runId:'chat-switch-debug-1',hypothesisId,location,message,data,timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
+  
+    function hashShort(value) {
+      const text = String(value || "");
+      let hash = 0;
+      for (let index = 0; index < text.length; index += 1) {
+        hash = ((hash * 31) + text.charCodeAt(index)) >>> 0;
+      }
+      return text ? hash.toString(36) : "";
+    }
+  
+    function getActiveDebugHints() {
+      const lastOpened = parseStoredString(localStorage.getItem("TM_useLastOpenedChatID"));
+      return {
+        lastOpenedLength: lastOpened.length,
+        lastOpenedHash: hashShort(lastOpened),
+        locationHashLength: location.hash.length,
+        locationHashHash: hashShort(location.hash)
+      };
+    }
   
     function createOverlay() {
       let el = document.getElementById("tm-soft-token-warning");
@@ -293,11 +323,13 @@
   
       if (tmValue && tmValue.tokens > 0) {
         render(tmValue.tokens, "TypingMind UI");
+        logRenderDecision("TypingMind UI", tmValue.tokens, tmValue.source || "visible scan");
         return;
       }
   
       if (indexedDbContextValue && indexedDbContextValue.tokens > 0) {
         render(indexedDbContextValue.tokens, "TypingMind data");
+        logRenderDecision("TypingMind data", indexedDbContextValue.tokens, indexedDbContextValue.source);
         return;
       }
   
@@ -305,11 +337,28 @@
         const estimated = estimateVisibleChatTokens();
         if (estimated > 0) {
           render(estimated, "fallback estimate");
+          logRenderDecision("fallback estimate", estimated, "visible text estimate");
           return;
         }
       }
   
       renderNotFound();
+      logRenderDecision("not found", 0, "no source");
+    }
+  
+    function logRenderDecision(label, tokens, source) {
+      const hints = getActiveDebugHints();
+      const signature = `${label}:${tokens}:${hints.lastOpenedHash}:${hints.locationHashHash}`;
+      if (signature === lastRenderSignature) return;
+      lastRenderSignature = signature;
+      agentDebugLog("H3,H4", "tm-soft-token-modal-reader.js:update", "render source changed", {
+        label,
+        tokens,
+        source,
+        hasIndexedDbContext: Boolean(indexedDbContextValue && indexedDbContextValue.tokens),
+        indexedDbTokens: indexedDbContextValue && indexedDbContextValue.tokens ? indexedDbContextValue.tokens : null,
+        activeHints: hints
+      });
     }
   
     function findTypingMindVisibleTokenCount() {
@@ -575,17 +624,33 @@
       setInterval(() => {
         refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
       }, CFG.REFRESH_MS * 3);
+      setInterval(() => {
+        const hints = getActiveDebugHints();
+        const signature = `${hints.lastOpenedHash}:${hints.locationHashHash}`;
+        if (signature === lastActiveHintSignature) return;
+        lastActiveHintSignature = signature;
+        agentDebugLog("H1,H2", "tm-soft-token-modal-reader.js:start", "active chat hint changed", hints);
+      }, 750);
   
       window.addEventListener("hashchange", () => {
+        agentDebugLog("H2", "tm-soft-token-modal-reader.js:hashchange", "navigation event fired", getActiveDebugHints());
         indexedDbContextValue = null;
         refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
         update();
       });
       window.addEventListener("popstate", () => {
+        agentDebugLog("H2", "tm-soft-token-modal-reader.js:popstate", "navigation event fired", getActiveDebugHints());
         indexedDbContextValue = null;
         refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
         update();
       });
+      document.addEventListener("click", (event) => {
+        const target = event.target && event.target.closest
+          ? event.target.closest("nav a, nav button, aside a, aside button, [role='navigation'] a, [role='navigation'] button")
+          : null;
+        if (!target) return;
+        agentDebugLog("H2", "tm-soft-token-modal-reader.js:start", "left navigation click observed", getActiveDebugHints());
+      }, true);
   
       console.info("[TM Soft Token Warning] Loaded.");
     }
@@ -601,13 +666,25 @@
     }
   
     async function refreshActiveChatContextFromIndexedDb() {
-      if (indexedDbContextRefreshInFlight) return indexedDbContextValue;
+      if (indexedDbContextRefreshInFlight) {
+        agentDebugLog("H5", "tm-soft-token-modal-reader.js:refreshActiveChatContextFromIndexedDb", "refresh skipped while in flight", getActiveDebugHints());
+        return indexedDbContextValue;
+      }
       indexedDbContextRefreshInFlight = true;
+      const startHints = getActiveDebugHints();
+      agentDebugLog("H1,H5", "tm-soft-token-modal-reader.js:refreshActiveChatContextFromIndexedDb", "refresh started", startHints);
       try {
         const value = await readActiveChatContextFromIndexedDb();
         if (value && value.tokens > 0) {
           indexedDbContextValue = value;
         }
+        agentDebugLog("H1,H3", "tm-soft-token-modal-reader.js:refreshActiveChatContextFromIndexedDb", "refresh finished", {
+          startHints,
+          endHints: getActiveDebugHints(),
+          selectedTokens: value && value.tokens ? value.tokens : null,
+          selectedMessageCount: value && value.messageCount ? value.messageCount : null,
+          retainedTokens: indexedDbContextValue && indexedDbContextValue.tokens ? indexedDbContextValue.tokens : null
+        });
         return indexedDbContextValue;
       } finally {
         indexedDbContextRefreshInFlight = false;
@@ -616,7 +693,10 @@
   
     function readActiveChatContextFromIndexedDb() {
       const lastOpened = parseStoredString(localStorage.getItem("TM_useLastOpenedChatID"));
-      if (!lastOpened) return Promise.resolve(null);
+      if (!lastOpened) {
+        agentDebugLog("H1,H3", "tm-soft-token-modal-reader.js:readActiveChatContextFromIndexedDb", "missing last opened chat id", getActiveDebugHints());
+        return Promise.resolve(null);
+      }
   
       return new Promise((resolve, reject) => {
         const request = indexedDB.open("keyval-store");
