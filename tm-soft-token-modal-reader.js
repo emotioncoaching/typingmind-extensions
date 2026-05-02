@@ -48,15 +48,6 @@
     let collapsed = false;
     let indexedDbContextValue = null;
     let indexedDbContextRefreshInFlight = false;
-    const agentDebugCounts = Object.create(null);
-  
-    function agentDebugLog(hypothesisId, location, message, data) {
-      agentDebugCounts[message] = (agentDebugCounts[message] || 0) + 1;
-      if (agentDebugCounts[message] > 8) return;
-      // #region agent log
-      fetch('http://127.0.0.1:7494/ingest/61348057-d424-4ab9-a9bb-6fb7fb004de4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d496fb'},body:JSON.stringify({sessionId:'d496fb',runId:'closed-modal-source-pre-fix',hypothesisId,location,message,data,timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-    }
   
     function createOverlay() {
       let el = document.getElementById("tm-soft-token-warning");
@@ -302,20 +293,11 @@
   
       if (tmValue && tmValue.tokens > 0) {
         render(tmValue.tokens, "TypingMind UI");
-        agentDebugLog("H1,H5", "tm-soft-token-modal-reader.js:update", "rendered TypingMind-visible value", {
-          tokens: tmValue.tokens,
-          source: tmValue.source || "visible scan"
-        });
         return;
       }
   
       if (indexedDbContextValue && indexedDbContextValue.tokens > 0) {
         render(indexedDbContextValue.tokens, "TypingMind data");
-        agentDebugLog("H3", "tm-soft-token-modal-reader.js:update", "rendered IndexedDB active chat value", {
-          tokens: indexedDbContextValue.tokens,
-          source: indexedDbContextValue.source,
-          messageCount: indexedDbContextValue.messageCount
-        });
         return;
       }
   
@@ -323,9 +305,6 @@
         const estimated = estimateVisibleChatTokens();
         if (estimated > 0) {
           render(estimated, "fallback estimate");
-          agentDebugLog("H1", "tm-soft-token-modal-reader.js:update", "rendered fallback estimate", {
-            tokens: estimated
-          });
           return;
         }
       }
@@ -589,7 +568,6 @@
       createOverlay();
       refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
       update();
-      scheduleSourceDiscovery();
   
       // A full-document MutationObserver can be triggered by this overlay's own
       // DOM writes. Polling keeps refresh work bounded and avoids feedback loops.
@@ -602,70 +580,14 @@
         indexedDbContextValue = null;
         refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
         update();
-        scheduleSourceDiscovery();
       });
       window.addEventListener("popstate", () => {
         indexedDbContextValue = null;
         refreshActiveChatContextFromIndexedDb().then(update).catch(() => {});
         update();
-        scheduleSourceDiscovery();
       });
   
       console.info("[TM Soft Token Warning] Loaded.");
-    }
-  
-    let sourceDiscoveryTimer = null;
-    function scheduleSourceDiscovery() {
-      if (sourceDiscoveryTimer) window.clearTimeout(sourceDiscoveryTimer);
-      sourceDiscoveryTimer = window.setTimeout(() => {
-        runSourceDiscovery().catch(() => {});
-      }, 1200);
-    }
-  
-    async function runSourceDiscovery() {
-      const bodyText = document.body.textContent || "";
-      agentDebugLog("H1", "tm-soft-token-modal-reader.js:runSourceDiscovery", "closed-modal DOM/token surface", {
-        hasCurrentContextText: /current\s+context\s+length/i.test(bodyText),
-        tokenNumbers: extractTokenNumberMentions(bodyText).slice(0, 12),
-        urlPathLength: location.pathname.length,
-        hashLength: location.hash.length
-      });
-  
-      const indexedDbSurface = await inspectIndexedDbSurface();
-      agentDebugLog("H3", "tm-soft-token-modal-reader.js:runSourceDiscovery", "indexedDB numeric/store surface", indexedDbSurface);
-    }
-  
-    function extractTokenNumberMentions(text) {
-      return (text.match(/\d[\d,.]*\s*tokens?/gi) || [])
-        .map((value) => parseTokenishNumbers(value)[0])
-        .filter((value) => Number.isFinite(value));
-    }
-  
-    async function inspectIndexedDbSurface() {
-      if (!indexedDB.databases) {
-        return { supported: false };
-      }
-  
-      const databases = await indexedDB.databases();
-      const activeChatHints = getActiveChatHints();
-      const summaries = [];
-      for (const dbInfo of databases.slice(0, 8)) {
-        if (!dbInfo.name) continue;
-        const summary = await inspectDatabase(dbInfo.name, activeChatHints).catch((error) => ({
-          name: dbInfo.name,
-          errorName: error && error.name ? error.name : "unknown"
-        }));
-        summaries.push(summary);
-      }
-      return { supported: true, activeChatHints, databases: summaries };
-    }
-  
-    function getActiveChatHints() {
-      const lastOpened = parseStoredString(localStorage.getItem("TM_useLastOpenedChatID"));
-      return {
-        lastOpenedLength: lastOpened ? lastOpened.length : 0,
-        hashLength: location.hash.length
-      };
     }
   
     function parseStoredString(value) {
@@ -685,13 +607,6 @@
         const value = await readActiveChatContextFromIndexedDb();
         if (value && value.tokens > 0) {
           indexedDbContextValue = value;
-          agentDebugLog("H3", "tm-soft-token-modal-reader.js:refreshActiveChatContextFromIndexedDb", "active chat IndexedDB value selected", {
-            tokens: value.tokens,
-            source: value.source,
-            messageCount: value.messageCount,
-            totalTokens: value.totalTokens,
-            totalCachedTokens: value.totalCachedTokens
-          });
         }
         return indexedDbContextValue;
       } finally {
@@ -771,208 +686,8 @@
       return null;
     }
   
-    function inspectDatabase(name, activeChatHints) {
-      return new Promise((resolve, reject) => {
-        const request = indexedDB.open(name);
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => {
-          const db = request.result;
-          const storeNames = Array.from(db.objectStoreNames);
-          const interestingStoreNames = storeNames.slice(0, 8);
-  
-          if (!interestingStoreNames.length) {
-            db.close();
-            resolve({ name, storeNames: storeNames.slice(0, 20), stores: [] });
-            return;
-          }
-  
-          const transaction = db.transaction(interestingStoreNames, "readonly");
-          const stores = [];
-          transaction.oncomplete = () => {
-            db.close();
-            resolve({ name, storeNames: storeNames.slice(0, 20), stores });
-          };
-          transaction.onerror = () => {
-            db.close();
-            reject(transaction.error);
-          };
-  
-          for (const storeName of interestingStoreNames) {
-            const store = transaction.objectStore(storeName);
-            const storeSummary = {
-              name: storeName,
-              keyPath: store.keyPath,
-              indexNames: Array.from(store.indexNames).slice(0, 20),
-              scannedRecords: 0,
-              chatRecordCount: 0,
-              lastOpenedMatchCount: 0,
-              likelyOpenChatCandidates: [],
-              highTokenCandidates: [],
-              recentCandidates: []
-            };
-            stores.push(storeSummary);
-  
-            let seen = 0;
-            const cursorRequest = store.openCursor();
-            cursorRequest.onsuccess = () => {
-              const cursor = cursorRequest.result;
-              if (!cursor) return;
-              seen += 1;
-              storeSummary.scannedRecords = seen;
-  
-              const chatSummary = summarizeChatRecord(cursor.key, cursor.value, activeChatHints);
-              if (chatSummary) {
-                storeSummary.chatRecordCount += 1;
-                if (
-                  chatSummary.keyMatchesLastOpened ||
-                  chatSummary.idMatchesLastOpened ||
-                  chatSummary.chatIDMatchesLastOpened
-                ) {
-                  storeSummary.lastOpenedMatchCount += 1;
-                }
-  
-                if (isLikelyOpenChatCandidate(chatSummary)) {
-                  pushLimited(storeSummary.likelyOpenChatCandidates, chatSummary, 20);
-                }
-                if (chatSummary.hasNearRangeTokenUsage || chatSummary.tokenUsage.totalTokens >= 1000000) {
-                  pushLimited(storeSummary.highTokenCandidates, chatSummary, 30);
-                }
-                if (chatSummary.updatedAtMs) {
-                  pushLimited(storeSummary.recentCandidates, chatSummary, 20);
-                  storeSummary.recentCandidates.sort((a, b) => (b.updatedAtMs || 0) - (a.updatedAtMs || 0));
-                }
-              }
-              cursor.continue();
-            };
-          }
-        };
-      });
-    }
-  
-    function pushLimited(list, item, limit) {
-      list.push(item);
-      if (list.length > limit) list.shift();
-    }
-  
-    function isLikelyOpenChatCandidate(chatSummary) {
-      const totalTokens = chatSummary.tokenUsage.totalTokens || 0;
-      return (
-        chatSummary.messageCount >= 35 &&
-        chatSummary.messageCount <= 42 &&
-        totalTokens >= 1000000 &&
-        totalTokens <= 2500000
-      );
-    }
-  
-    function summarizeChatRecord(key, value, activeChatHints) {
-      if (!value || typeof value !== "object" || !Array.isArray(value.messages)) return null;
-  
-      const id = typeof value.id === "string" ? value.id : "";
-      const chatID = typeof value.chatID === "string" ? value.chatID : "";
-      const keyString = typeof key === "string" ? key : "";
-      const lastOpened = parseStoredString(localStorage.getItem("TM_useLastOpenedChatID"));
-      const messages = value.messages || [];
-      const usageValues = collectMessageUsageSummaries(messages);
-      const tokenUsage = value.tokenUsage && typeof value.tokenUsage === "object"
-        ? value.tokenUsage
-        : {};
-  
-      return {
-        keyLength: keyString.length,
-        idLength: id.length,
-        chatIDLength: chatID.length,
-        keyMatchesLastOpened: Boolean(lastOpened && keyString === lastOpened),
-        idMatchesLastOpened: Boolean(lastOpened && id === lastOpened),
-        chatIDMatchesLastOpened: Boolean(lastOpened && chatID === lastOpened),
-        activeHintLengthMatch:
-          keyString.length === activeChatHints.lastOpenedLength ||
-          id.length === activeChatHints.lastOpenedLength ||
-          chatID.length === activeChatHints.lastOpenedLength,
-        messageCount: messages.length,
-        updatedAtMs: normalizeTimestamp(value.updatedAt),
-        createdAtMs: normalizeTimestamp(value.createdAt),
-        updatedAtRankable: Boolean(normalizeTimestamp(value.updatedAt)),
-        tokenUsage: {
-          totalTokens: numberOrNull(tokenUsage.totalTokens),
-          messageTokens: numberOrNull(tokenUsage.messageTokens),
-          totalCachedTokens: numberOrNull(tokenUsage.totalCachedTokens),
-          totalReasoningTokens: numberOrNull(tokenUsage.totalReasoningTokens)
-        },
-        usageDerived: deriveUsageCandidates(messages),
-        hasNearRangeTokenUsage: [
-          tokenUsage.totalTokens,
-          tokenUsage.messageTokens,
-          tokenUsage.totalCachedTokens,
-          tokenUsage.totalReasoningTokens
-        ].some((value) => typeof value === "number" && value >= 80000 && value <= 2000000),
-        usageValues
-      };
-    }
-  
-    function deriveUsageCandidates(messages) {
-      const usageMessages = messages
-        .filter((message) => message && typeof message === "object" && message.usage);
-      const usageValues = usageMessages.map((message) => message.usage || {});
-      const totals = usageValues
-        .map((usage) => numberOrNull(usage.total_tokens))
-        .filter((value) => value !== null);
-      const promptTotals = usageValues
-        .map((usage) => numberOrNull(usage.prompt_tokens))
-        .filter((value) => value !== null);
-      const currentLikeTotals = usageValues
-        .map((usage) => {
-          const prompt = numberOrZero(usage.prompt_tokens);
-          const cacheRead = numberOrZero(usage.cache_read_input_tokens);
-          const cacheCreate = numberOrZero(usage.cache_creation_input_tokens);
-          const extendedCacheCreate = numberOrZero(usage.extended_cache_creation_input_tokens);
-          return prompt + cacheRead + cacheCreate + extendedCacheCreate;
-        })
-        .filter((value) => value > 0);
-  
-      return {
-        usageMessageCount: usageMessages.length,
-        maxTotalTokens: totals.length ? Math.max(...totals) : null,
-        lastTotalTokens: totals.length ? totals[totals.length - 1] : null,
-        maxPromptTokens: promptTotals.length ? Math.max(...promptTotals) : null,
-        lastPromptTokens: promptTotals.length ? promptTotals[promptTotals.length - 1] : null,
-        maxCurrentLikeTokens: currentLikeTotals.length ? Math.max(...currentLikeTotals) : null,
-        lastCurrentLikeTokens: currentLikeTotals.length ? currentLikeTotals[currentLikeTotals.length - 1] : null
-      };
-    }
-  
-    function collectMessageUsageSummaries(messages) {
-      const usageMessages = messages
-        .filter((message) => message && typeof message === "object" && message.usage)
-        .slice(-8);
-  
-      return usageMessages.map((message) => {
-        const usage = message.usage || {};
-        return {
-          total_tokens: numberOrNull(usage.total_tokens),
-          prompt_tokens: numberOrNull(usage.prompt_tokens),
-          completion_tokens: numberOrNull(usage.completion_tokens),
-          cache_read_input_tokens: numberOrNull(usage.cache_read_input_tokens),
-          cache_creation_input_tokens: numberOrNull(usage.cache_creation_input_tokens),
-          extended_cache_creation_input_tokens: numberOrNull(usage.extended_cache_creation_input_tokens)
-        };
-      });
-    }
-  
     function numberOrNull(value) {
       return typeof value === "number" && Number.isFinite(value) ? value : null;
-    }
-  
-    function numberOrZero(value) {
-      return typeof value === "number" && Number.isFinite(value) ? value : 0;
-    }
-  
-    function normalizeTimestamp(value) {
-      if (typeof value === "number" && Number.isFinite(value)) return value;
-      if (typeof value === "string") {
-        const parsed = Date.parse(value);
-        return Number.isFinite(parsed) ? parsed : null;
-      }
-      return null;
     }
   
     if (document.readyState === "loading") {
