@@ -9,7 +9,8 @@
      * - Show a separate soft warning overlay:
      *   Green  = up to BLUE_ABOVE_TOKENS
      *   Blue   = above BLUE_ABOVE_TOKENS to ORANGE_AT_TOKENS
-     *   Orange = ORANGE_AT_TOKENS and above
+     *   Orange = ORANGE_AT_TOKENS to RED_ABOVE_TOKENS
+     *   Red    = above RED_ABOVE_TOKENS
      *
      * Read-only:
      * - Does not change model settings.
@@ -27,6 +28,7 @@
     const CFG = {
       BLUE_ABOVE_TOKENS: 50000,
       ORANGE_AT_TOKENS: 75000,
+      RED_ABOVE_TOKENS: 100000,
   
       // If true, use visible chat text as fallback when the TypingMind UI token
       // number cannot be found.
@@ -129,6 +131,11 @@
           box-shadow: 0 0 0 3px rgba(245,158,11,0.18);
         }
   
+        #tm-soft-token-warning.tmstw-red .tmstw-dot {
+          background: #ef4444;
+          box-shadow: 0 0 0 3px rgba(239,68,68,0.20);
+        }
+  
         #tm-soft-token-warning.tmstw-purple .tmstw-dot {
           background: #a855f7;
           box-shadow: 0 0 0 3px rgba(168,85,247,0.20);
@@ -207,6 +214,10 @@
   
         #tm-soft-token-warning.tmstw-orange .tmstw-bar {
           background: #f59e0b;
+        }
+  
+        #tm-soft-token-warning.tmstw-red .tmstw-bar {
+          background: #ef4444;
         }
   
         #tm-soft-token-warning.tmstw-purple .tmstw-bar {
@@ -290,7 +301,7 @@
             <div class="tmstw-bar"></div>
           </div>
           <div class="tmstw-main">Looking for TypingMind token count…</div>
-          <div class="tmstw-sub">Green ≤ 50k · Blue > 50k–75k · Orange ≥ 75k</div>
+          <div class="tmstw-sub">Green ≤ 50k · Blue > 50k–75k · Orange ≥ 75k–100k · Red > 100k</div>
           <div class="tmstw-hint">Tip: switch TypingMind's built-in display to context length/tokens, not cost.</div>
         </div>
       `;
@@ -311,13 +322,15 @@
       const el = createOverlay();
   
       let band = "green";
-      if (tokenCount >= CFG.ORANGE_AT_TOKENS) {
+      if (tokenCount > CFG.RED_ABOVE_TOKENS) {
+        band = "red";
+      } else if (tokenCount >= CFG.ORANGE_AT_TOKENS) {
         band = "orange";
       } else if (tokenCount > CFG.BLUE_ABOVE_TOKENS) {
         band = "blue";
       }
   
-      el.classList.remove("tmstw-green", "tmstw-blue", "tmstw-orange", "tmstw-purple");
+      el.classList.remove("tmstw-green", "tmstw-blue", "tmstw-orange", "tmstw-red", "tmstw-purple");
       el.classList.add(`tmstw-${band}`);
       el.classList.toggle("tmstw-collapsed", collapsed);
       positionCompactWidget();
@@ -327,24 +340,26 @@
       const sub = el.querySelector(".tmstw-sub");
       const hint = el.querySelector(".tmstw-hint");
   
-      const pctToOrange = Math.min(100, Math.round((tokenCount / CFG.ORANGE_AT_TOKENS) * 100));
-      bar.style.width = `${pctToOrange}%`;
+      const pctToRed = Math.min(100, Math.round((tokenCount / CFG.RED_ABOVE_TOKENS) * 100));
+      bar.style.width = `${pctToRed}%`;
   
-      main.textContent = `${formatTokens(tokenCount)} tokens · ${pctToOrange}% of orange threshold`;
-      sub.textContent = `Source: ${source} · Blue above ${formatTokens(CFG.BLUE_ABOVE_TOKENS)} · Orange at ${formatTokens(CFG.ORANGE_AT_TOKENS)}`;
+      main.textContent = `${formatTokens(tokenCount)} tokens · ${pctToRed}% of red threshold`;
+      sub.textContent = `Source: ${source} · Blue above ${formatTokens(CFG.BLUE_ABOVE_TOKENS)} · Orange at ${formatTokens(CFG.ORANGE_AT_TOKENS)} · Red above ${formatTokens(CFG.RED_ABOVE_TOKENS)}`;
   
       if (band === "green") {
         hint.textContent = "Green: no action needed yet.";
       } else if (band === "blue") {
         hint.textContent = "Blue: context is growing, but still below the warning range.";
-      } else {
+      } else if (band === "orange") {
         hint.textContent = "Orange: prepare a handoff summary or compacting point soon.";
+      } else {
+        hint.textContent = "Red: context is above 100k tokens. Handoff or compact now.";
       }
     }
   
     function renderNotFound() {
       const el = createOverlay();
-      el.classList.remove("tmstw-green", "tmstw-blue", "tmstw-orange", "tmstw-purple");
+      el.classList.remove("tmstw-green", "tmstw-blue", "tmstw-orange", "tmstw-red", "tmstw-purple");
       el.classList.add("tmstw-purple");
       positionCompactWidget();
   
